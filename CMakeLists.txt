@@ -116,39 +116,6 @@ if (MSVC)
     )
 endif()
 
-# MinGW / Clang
-if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(FmEngineApi PRIVATE -O2)
-    target_compile_options(FmEngineApi PRIVATE -fvisibility=hidden)
-    # ソース (fmgen 本体含む) は UTF-8 で統一されているため、
-    # 入力・実行時文字セットを明示的に UTF-8 にする (/utf-8 相当)。
-    target_compile_options(FmEngineApi PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
-    # fmgen は C++03 時代のソースで、{ 0, 1, -1, 0 } のような
-    # uint8 配列初期化に負数リテラルを使っている箇所がある。
-    # C++11 以降の list-initialization では narrowing conversion が
-    # 規格上 ill-formed (GCC/Clang はデフォルトでエラー) になるため、
-    # fmgen 本体ソースに限り警告に格下げする。
-    # (MSVC は元々これを警告止まりとして扱うため未対応で問題ない)
-    set_source_files_properties(
-        ${FMGEN_DIR}/fmgen.cpp
-        ${FMGEN_DIR}/opna.cpp
-        ${FMGEN_DIR}/opm.cpp
-        ${FMGEN_DIR}/psg.cpp
-        ${FMGEN_DIR}/fmtimer.cpp
-        ${FMGEN_DIR}/file.cpp
-        PROPERTIES COMPILE_OPTIONS "-Wno-narrowing"
-    )
-endif()
-
-# MinGW は PKEY_Device_FriendlyName 等の PROPERTYKEY/GUID 定数を
-# 静的ライブラリとして提供しないため、INITGUID で定義側にまわす。
-# KSDATAFORMAT_SUBTYPE_* は libksguid に実体があるため追加リンクする。
-# (MSVC では uuid.lib に含まれているため不要・無関係)
-if (MINGW)
-    target_compile_definitions(FmEngineApi PRIVATE INITGUID)
-    target_link_libraries(FmEngineApi PRIVATE ksguid)
-endif()
-
 # =======================================================
 #  ターゲット 2: sample_app.exe  (使用例。YMEngine 版を流用)
 #  DLL の .lib にリンクする形でビルド
@@ -167,10 +134,6 @@ if (MSVC)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
     target_compile_options(sample_app PRIVATE /W3 /wd4100 /utf-8)
-endif()
-
-if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    target_compile_options(sample_app PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
 endif()
 
 # patches/ ディレクトリの JSON ファイルをビルド出力ディレクトリにコピー
