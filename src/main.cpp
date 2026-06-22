@@ -34,7 +34,7 @@
 // 注意: AddChip は Wasapi_Start より前に全て完了させること。
 //       (WASAPI スレッドとの競合防止)
 
-#include "FmEngineApi.h"
+#include "FmGenEngineApi.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

@@ -38,10 +38,10 @@ endif()
 set(NLOHMANN_DIR "${CMAKE_SOURCE_DIR}/extern/nlohmann_json/single_include" CACHE PATH "nlohmann/json include dir")
 
 # =======================================================
-#  ターゲット 1: FmEngineApi.dll (fmgen バックエンド)
+#  ターゲット 1: FmGenEngineApi.dll (fmgen バックエンド)
 # =======================================================
 add_library(FmEngineApi SHARED
-    src/FmEngineApi.cpp
+    src/FmGenEngineApi.cpp
     # fmgen ソース一式 (無改造)
     ${FMGEN_DIR}/fmgen.cpp
     ${FMGEN_DIR}/opna.cpp
@@ -50,6 +50,11 @@ add_library(FmEngineApi SHARED
     ${FMGEN_DIR}/fmtimer.cpp
     ${FMGEN_DIR}/file.cpp
 )
+
+# CMake 内部ターゲット名は FmEngineApi のままだが、
+# 出力ファイル名は FmGenEngineApi.dll / FmGenEngineApi.lib にする。
+# これにより YMEngine の FmEngineApi.dll と共存・切り替えが可能になる。
+set_target_properties(FmEngineApi PROPERTIES OUTPUT_NAME "FmGenEngineApi")
 
 target_include_directories(FmEngineApi PRIVATE
     src/
@@ -68,13 +73,13 @@ else()
 endif()
 target_compile_options(FmEngineApi PRIVATE ${FMGEN_FORCE_INCLUDE})
 
-# FMENGINE_EXPORTS → FmEngineApi.cpp 内で dllexport になる
+# FMENGINE_EXPORTS → FmGenEngineApi.cpp 内で dllexport になる
 target_compile_definitions(FmEngineApi PRIVATE FMENGINE_EXPORTS)
 
 # .def ファイルでエクスポートシンボルを明示 (MSVC)
 if (MSVC)
     set_target_properties(FmEngineApi PROPERTIES
-        LINK_FLAGS "/DEF:\"${CMAKE_SOURCE_DIR}/src/FmEngineApi.def\""
+        LINK_FLAGS "/DEF:\"${CMAKE_SOURCE_DIR}/src/FmGenEngineApi.def\""
     )
 endif()
 
@@ -87,7 +92,7 @@ target_link_libraries(FmEngineApi PRIVATE
 
 # バージョン情報を DLL に埋め込む (Windows リソース)
 if (MSVC)
-    target_sources(FmEngineApi PRIVATE src/FmEngineApi.rc)
+    target_sources(FmEngineApi PRIVATE src/FmGenEngineApi.rc)
 endif()
 
 # MSVC 最適化・警告設定
@@ -197,4 +202,4 @@ install(TARGETS FmEngineApi
     LIBRARY DESTINATION lib          # .so (未使用、Windows専用のため)
     ARCHIVE DESTINATION lib          # .lib (import library)
 )
-install(FILES src/FmEngineApi.h DESTINATION include)
+install(FILES src/FmGenEngineApi.h DESTINATION include)
