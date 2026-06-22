@@ -1,5 +1,12 @@
 #pragma once
 // FmEngine.h
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 FmGenEngine contributors
+// (この FmEngineApi 互換ラッパー・エンジンコード自体は MIT License。
+//  内部で利用する fmgen 本体 (extern/fmgen/) は別ライセンス。
+//  詳細はリポジトリルートの LICENSE / README.md を参照)
+//
 // 複数の FmGenChip を管理し、レジスタ書き込み API と
 // オーディオコールバック向けのサンプル生成 API を提供する。
 //

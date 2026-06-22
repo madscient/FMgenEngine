@@ -1,4 +1,9 @@
 // file_stub.cpp (Linux検証ビルド専用)
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 FmGenEngine contributors
+// (詳細はリポジトリルートの LICENSE / README.md を参照)
+//
 // fmgen file.cpp (file.h の FileIO) の最小スタブ実装。
 // 検証テストでは実際のファイル I/O を行わないため、
 // 常に失敗 (Open() が false) を返すだけのダミー実装で十分。

@@ -1,4 +1,10 @@
 ; FmEngineApi.def
+;
+; SPDX-License-Identifier: MIT
+; Copyright (c) 2026 FmGenEngine contributors
+; (本ファイルは YMEngine の同名ファイルを無改造で流用。
+;  詳細はリポジトリルートの LICENSE / README.md を参照)
+;
 ; MSVC リンカ用のエクスポート定義ファイル。
 ; 関数名の装飾を防ぎ、バイナリ互換性を保つ。
 ; (extern "C" を使っているので通常は不要だが、明示することで

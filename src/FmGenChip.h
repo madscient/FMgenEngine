@@ -1,5 +1,12 @@
 #pragma once
 // FmGenChip.h
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 FmGenEngine contributors
+// (このラッパーコード自体は MIT License。内部で利用する fmgen 本体
+//  (extern/fmgen/) は cisc 氏による別ライセンス。
+//  詳細はリポジトリルートの LICENSE / README.md を参照)
+//
 // fmgen (cisc, 1998-2003) のラッパー。
 // YMEngine (ymfm版) の FmChip 抽象インターフェースと完全互換のシグネチャを
 // 提供し、上位層 (FmEngine.h / FmEngineApi.cpp) をそのまま流用できるようにする。

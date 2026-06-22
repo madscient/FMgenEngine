@@ -1,4 +1,9 @@
 // FmEngineApi.cpp
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 FmGenEngine contributors
+// (詳細はリポジトリルートの LICENSE / README.md を参照)
+//
 // FmEngineApi.h で宣言した C ファサードの実装 (fmgen バックエンド版)。
 //
 // YMEngine (ymfm版) の FmEngineApi.cpp と ABI 完全互換になるよう、

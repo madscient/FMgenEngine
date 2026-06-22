@@ -1,4 +1,13 @@
 // main.cpp
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 FmGenEngine contributors
+// 本ファイルは YMEngine (https://github.com/madscient/YMEngine、MIT
+// License) の src/main.cpp (sample_app) をベースに、fmgen が対応する
+// 5 チップ向けに改変したもの。ライセンス上の扱いは YMEngine 側と
+// 同じ MIT License とする。詳細はリポジトリルートの LICENSE /
+// README.md を参照。
+//
 // FmGenEngine チップテスト (fmgen バックエンド版)
 // YMEngine (ymfm版) の sample_app (src/main.cpp) を流用し、
 // fmgen が対応する 5 チップ (OPN/OPNA/OPNB/OPM/SSG) 向けに調整したもの。

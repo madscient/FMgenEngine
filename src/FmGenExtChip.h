@@ -1,5 +1,12 @@
 #pragma once
 // FmGenExtChip.h
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 FmGenEngine contributors
+// (このラッパーコード自体は MIT License。内部で利用する fmgen 本体
+//  (extern/fmgen/) は cisc 氏による別ライセンス。
+//  詳細はリポジトリルートの LICENSE / README.md を参照)
+//
 // fmgen 同梱の PSG (YM2149 / AY-3-8910 互換) クラスのラッパー。
 // YMEngine src/ExternalChip.h の ExtChip インターフェースと同じシグネチャを
 // 提供する。
