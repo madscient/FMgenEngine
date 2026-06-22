@@ -33,6 +33,7 @@ g++ -std=c++17 -O2 -Wall \
     test_native/file_stub.cpp \
     "${SRC_DIR}/fmgen.cpp" \
     "${SRC_DIR}/opna.cpp" \
+    "${SRC_DIR}/opna_ext.cpp" \
     "${SRC_DIR}/opm.cpp" \
     "${SRC_DIR}/psg.cpp" \
     "${SRC_DIR}/fmtimer.cpp" \

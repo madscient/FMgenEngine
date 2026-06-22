@@ -377,6 +377,9 @@ namespace FM
 	};
 
 	//	YM2612/3438(OPN2) ----------------------------------------------------
+	// [FmGenEngine] opna.h オリジナルの OPN2 は 3ch + 補間ワーク程度の
+	// スケルトン宣言のみで、6ch FM / DAC / ポート分割の実装が存在しなかった。
+	// FmGenEngine での完全実装にあたり、メンバ変数を 6ch + DAC 対応に修正した。
 	class OPN2 : public OPNBase
 	{
 	public:
@@ -384,13 +387,13 @@ namespace FM
 		virtual ~OPN2() {}
 		
 		bool	Init(uint c, uint r, bool=false, const char* =0);
-		bool	SetRate(uint c, uint r, bool);
+		bool	SetRate(uint c, uint r, bool=false);
 		
 		void	Reset();
 		void 	Mix(Sample* buffer, int nsamples);
 		void 	SetReg(uint addr, uint data);
-		uint	GetReg(uint addr);
-		uint	ReadStatus() { return status & 0x03; }
+		uint	GetReg(uint addr) { return 0; }
+		uint	ReadStatus()   { return status & 0x03; }
 		uint	ReadStatusEx() { return 0xff; }
 		
 		void	SetChannelMask(uint mask);
@@ -401,14 +404,17 @@ namespace FM
 		void	SetStatus(uint bit);
 		void	ResetStatus(uint bit);
 		
-		uint	fnum[3];
+		// FM 6ch 分の F-Number レジスタ
+		// fnum[0-2]=port0(CH1-3), fnum[3-5]=port1(CH4-6)
+		uint	fnum[6];
 		uint	fnum3[3];
-		uint8	fnum2[6];
+		uint8	fnum2[9];	// F-Number 上位バイト (fnum2[6-8] は fnum3 用)
 		
-	// 線形補間用ワーク
-		int32	mixc, mixc1;
+		// DAC チャンネル (YM2612 固有)
+		bool	dacen;		// 0x2B bit7: DAC 有効フラグ
+		int		dacout;		// 0x2A: DAC 出力値 (符号付き、スケール済み)
 		
-		Channel4 ch[3];
+		Channel4 ch[6];	// FM 6ch
 	};
 }
 

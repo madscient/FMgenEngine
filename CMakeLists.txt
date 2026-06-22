@@ -49,6 +49,8 @@ add_library(FmEngineApi SHARED
     ${FMGEN_DIR}/psg.cpp
     ${FMGEN_DIR}/fmtimer.cpp
     ${FMGEN_DIR}/file.cpp
+    # FmGenEngine 追加実装 (OPN2 / OPNBB)
+    ${FMGEN_DIR}/opna_ext.cpp
 )
 
 # CMake 内部ターゲット名は FmEngineApi のままだが、
