@@ -4,6 +4,10 @@
 [YMEngine](https://github.com/madscient/YMEngine) (ymfm版) と
 **API (ABI) 互換**の Windows 向け FM 音源エンジン。
 
+ライセンス: FmGenEngine 独自コード (`src/`, `test_native/`) は
+**MIT License** ([`LICENSE`](./LICENSE))。同梱の fmgen 本体
+(`extern/fmgen/`) は別ライセンス。詳細は「ライセンス」節を参照。
+
 `FmEngineApi.h` を一切変更せずに DLL の中身だけを ymfm → fmgen に
 差し替えたもの。YMEngine 向けに書かれたアプリケーションは、リンクする
 DLL を本プロジェクトのもの ( `FmEngineApi.dll` ) に差し替えるだけで
@@ -65,6 +69,15 @@ FmGenEngine/
 **1 箇所だけソース上のバグを修正している** (詳細は次節)。
 それ以外のロジックは無改造。
 
+### 文字エンコーディングについて
+
+fmgen 0.08 配布時点のソースは Shift_JIS (CP932) でエンコードされて
+いたが、本プロジェクトでは `extern/fmgen/` 以下の全ファイル
+(`readme.txt` を含む) を **UTF-8 に変換**して同梱している。
+これはバイトエンコーディングの変換のみであり、改行コード (CRLF) を
+含めテキストとしての内容・字句は一切変更していない。詳細は
+`extern/fmgen/ENCODING_NOTE.md` を参照。
+
 ### fmgen ソースへの変更点 (`extern/fmgen/opna.h`)
 
 `OPNB` (YM2610) クラスが、基底クラス `OPNABase` と同名・同型の
@@ -93,8 +106,26 @@ FmGenEngine/
 
 ## ライセンス
 
+本プロジェクトは複数のライセンスが混在するコンポーネント構成になっている。
+**FmGenEngine 独自のラッパー・エンジンコード (`src/` および
+`test_native/`) は MIT License** とする (YMEngine と同じライセンス)。
+全文はリポジトリルートの [`LICENSE`](./LICENSE) を参照。
+
+| コンポーネント | パス | ライセンス |
+|---|---|---|
+| FmGenEngine ラッパー・エンジンコード | `src/`, `test_native/`, `CMakeLists.txt` | **MIT** ([`LICENSE`](./LICENSE) 参照) |
+| fmgen 本体 | `extern/fmgen/` | cisc (1998, 2003) オリジナルライセンス (MIT非互換、下記参照) |
+| nlohmann/json | `extern/nlohmann_json/` | MIT (nlohmann) |
+
+- **FmGenEngine 独自コード (`src/`, `test_native/`)**: MIT License。
+  `src/FmEngineApi.h` / `src/WasapiOutput.h` / `src/main.cpp` は
+  YMEngine 本家 (MIT License) から流用・改変したものだが、
+  YMEngine 自体が MIT License のため引き続き MIT として扱う。
+  各ファイル冒頭に `SPDX-License-Identifier: MIT` を明記している。
 - **fmgen**: cisc (1998, 2003) によるオリジナルライセンス。
-  `extern/fmgen/readme.txt` に全文を同梱。要約:
+  **MIT ではない**ため取り扱いに注意。
+  `extern/fmgen/readme.txt` に全文を同梱 (UTF-8 変換済み、内容は原文と
+  同一。詳細は `extern/fmgen/ENCODING_NOTE.md` 参照)。要約:
   - 由来 (作者・著作権) を明記すること
   - 配布する際はフリーソフトとすること
   - 改変したソースコードを配布する際は改変内容を明示すること
@@ -102,9 +133,6 @@ FmGenEngine/
   - ソースコードを配布する際はこの readme.txt を一切改変せずに添付すること
   - 商用ソフトへの組み込みには作者の事前合意が必要
 - **nlohmann/json**: MIT (nlohmann)
-- **このラッパー・エンジンコード (src/ 以下)**: MIT
-  (YMEngine 本家の `FmEngineApi.h` / `WasapiOutput.h` は同じく MIT の
-  YMEngine プロジェクトから無改造で流用している)
 
 ## セットアップ
 

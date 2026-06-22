@@ -1,4 +1,9 @@
 // windows.h (Linux検証ビルド専用スタブ)
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 FmGenEngine contributors
+// (詳細はリポジトリルートの LICENSE / README.md を参照)
+//
 // fmgen の DSP コアロジック (fmgen.cpp/opna.cpp/opm.cpp/psg.cpp/fmtimer.cpp)
 // が headers.h 経由で要求する最小限の定義のみを提供する。
 // 本物の Windows 環境では使われない (本番ビルドでは windows.h 本体が使われる)。

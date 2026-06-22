@@ -1,4 +1,9 @@
 // test_fmgen_native.cpp
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 FmGenEngine contributors
+// (詳細はリポジトリルートの LICENSE / README.md を参照)
+//
 // fmgen コア DSP ロジックの動作検証 (Linux ネイティブビルド)。
 // FmGenChip.h / FmGenExtChip.h ラッパー経由で各チップを実際に駆動し、
 // 音声サンプルが正しく生成される(無音でない・クラッシュしない)ことを確認する。

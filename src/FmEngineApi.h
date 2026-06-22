@@ -1,5 +1,14 @@
 #pragma once
 // FmEngineApi.h
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 FmGenEngine contributors
+// 本ファイルは YMEngine (https://github.com/madscient/YMEngine、MIT
+// License) の src/FmEngineApi.h を無改造のまま流用している
+// (ABI 互換性を保つため)。ライセンス上の扱いは YMEngine 側と同じ
+// MIT License とする。詳細はリポジトリルートの LICENSE / README.md
+// を参照。
+//
 // DLL として公開する C 互換ファサード API。
 //
 // MSVC 対応:

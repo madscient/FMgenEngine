@@ -1,5 +1,16 @@
 #pragma once
 // WasapiOutput.h
+//
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 FmGenEngine contributors
+// 本ファイルは YMEngine (https://github.com/madscient/YMEngine、MIT
+// License) の src/WasapiOutput.h を無改造のまま流用している
+// (WasapiOutput が要求する FmEngine インターフェース
+// (sampleRate()/generate()) を本プロジェクトの FmEngine.h が同じ
+// シグネチャで提供しているため、無改造で流用できる)。
+// ライセンス上の扱いは YMEngine 側と同じ MIT License とする。
+// 詳細はリポジトリルートの LICENSE / README.md を参照。
+//
 // WASAPI リアルタイム出力
 //
 // 設計方針:

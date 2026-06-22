@@ -1,5 +1,10 @@
 #!/bin/sh
 # build_and_run.sh
+#
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 FmGenEngine contributors
+# (詳細はリポジトリルートの LICENSE / README.md を参照)
+#
 # fmgen コア DSP ロジックの Linux ネイティブ動作検証ビルド。
 #
 # Windows / WASAPI 抜きで、fmgen (OPN/OPNA/OPNB/OPM/SSG) が実際に

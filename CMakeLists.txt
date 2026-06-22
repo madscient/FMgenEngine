@@ -1,3 +1,9 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 FmGenEngine contributors
+# (詳細はリポジトリルートの LICENSE / README.md を参照。
+#  本ビルド設定自体は MIT License。extern/fmgen/ 以下のソースは
+#  cisc 氏による別ライセンス)
+
 cmake_minimum_required(VERSION 3.20)
 project(FmGenEngineApi VERSION 1.0.0 LANGUAGES CXX)
 
@@ -107,6 +113,9 @@ endif()
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(FmEngineApi PRIVATE -O2)
     target_compile_options(FmEngineApi PRIVATE -fvisibility=hidden)
+    # ソース (fmgen 本体含む) は UTF-8 で統一されているため、
+    # 入力・実行時文字セットを明示的に UTF-8 にする (/utf-8 相当)。
+    target_compile_options(FmEngineApi PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
     # fmgen は C++03 時代のソースで、{ 0, 1, -1, 0 } のような
     # uint8 配列初期化に負数リテラルを使っている箇所がある。
     # C++11 以降の list-initialization では narrowing conversion が
@@ -151,6 +160,10 @@ if (MSVC)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
     )
     target_compile_options(sample_app PRIVATE /W3 /wd4100 /utf-8)
+endif()
+
+if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(sample_app PRIVATE -finput-charset=UTF-8 -fexec-charset=UTF-8)
 endif()
 
 # patches/ ディレクトリの JSON ファイルをビルド出力ディレクトリにコピー
