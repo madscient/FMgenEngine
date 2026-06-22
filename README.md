@@ -4,7 +4,7 @@
 [YMEngine](https://github.com/madscient/YMEngine) (ymfm版) と
 **API (ABI) 互換**の Windows 向け FM 音源エンジン。
 
-ライセンス: FmGenEngine 独自コード (`src/`, `test_native/`) は
+ライセンス: FmGenEngine 独自コード (`src/`) は
 **MIT License** ([`LICENSE`](./LICENSE))。同梱の fmgen 本体
 (`extern/fmgen/`) は別ライセンス。詳細は「ライセンス」節を参照。
 
@@ -23,22 +23,19 @@ YMEngine と同じ C ABI で利用したいというニーズに応える。
 
 ## 対応チップ
 
-fmgen 0.08 が実装しているチップのみに対応する
-(fmgen 0.08 は `OPN2` (YM2612) をヘッダ宣言のみで実装を含まないため、
-本プロジェクトでも `OPN2` は非対応)。
-
 | `FmChipType` / `FmChipTypeExt` | チップ | fmgen クラス | 備考 |
 |---|---|---|---|
-| `FM_CHIP_OPN`  | YM2203 (OPN)  | `FM::OPN`  | FM3ch + SSG3ch |
-| `FM_CHIP_OPNA` | YM2608 (OPNA) | `FM::OPNA` | FM6ch + SSG3ch + ADPCM-B + リズム(WAV) |
-| `FM_CHIP_OPNB` | YM2610 (OPNB) | `FM::OPNB` | FM6ch(実質4ch、CH0/3はADPCM専用) + SSG3ch + ADPCM-A/B |
-| `FM_CHIP_OPM`  | YM2151 (OPM)  | `FM::OPM`  | FM8ch |
-| `FM_CHIP_EXT_SSG` | YM2149 (SSG) | `::PSG`  | fmgen 同梱の PSG クラス |
+| `FM_CHIP_OPN`     | YM2203 (OPN)   | `FM::OPN`    | FM3ch + SSG3ch |
+| `FM_CHIP_OPNA`    | YM2608 (OPNA)  | `FM::OPNA`   | FM6ch + SSG3ch + ADPCM-B + リズム(WAV) |
+| `FM_CHIP_OPNB`    | YM2610 (OPNB)  | `FM::OPNB`   | FM4ch + SSG3ch + ADPCM-A/B |
+| `FM_CHIP_OPNBB`   | YM2610B (OPNBB)| `FM::OPNBB`  | FM6ch + SSG3ch + ADPCM-A/B ★追加実装 |
+| `FM_CHIP_OPN2`    | YM2612 (OPN2)  | `FM::OPN2`   | FM6ch + DACチャンネル ★追加実装 |
+| `FM_CHIP_OPM`     | YM2151 (OPM)   | `FM::OPM`    | FM8ch |
+| `FM_CHIP_EXT_SSG` | YM2149 (SSG)   | `::PSG`      | fmgen 同梱の PSG クラス |
 
-上記以外 (`FM_CHIP_Y8950` / `OPL` / `OPL2` / `OPL3` / `OPL4` / `OPNBB` /
-`OPN2` / `OPLL` 系 / `OPZ` / `VRC7` / `FM_CHIP_EXT_DCSG` / `SCC` / `SAA`)
-は `FmEngine_AddChip` / `FmEngine_AddExtChip` が `FM_ERR_INVALID_ARG`
-を返す。
+上記以外 (`FM_CHIP_Y8950` / `OPL` 系 / `OPLL` 系 / `OPZ` / `VRC7` /
+`FM_CHIP_EXT_DCSG` / `SCC` / `SAA`) は `FmEngine_AddChip` /
+`FmEngine_AddExtChip` が `FM_ERR_INVALID_ARG` を返す。
 
 ## ファイル構成
 
@@ -46,90 +43,101 @@ fmgen 0.08 が実装しているチップのみに対応する
 FmGenEngine/
 ├── CMakeLists.txt
 ├── extern/
-│   ├── fmgen/              ← fmgen 0.08 (cisc) を無改造で配置 (1ファイルのみ差分あり、後述)
+│   ├── fmgen/              ← fmgen 0.08 (cisc) + FmGenEngine による追加実装
 │   └── nlohmann_json/      ← single_include 同梱 (git submodule でも可)
 ├── src/
-│   ├── FmGenChip.h         fmgen (OPN/OPNA/OPNB/OPM) ラッパー
+│   ├── FmGenChip.h         fmgenチップラッパー (OPN/OPNA/OPNB/OPNBB/OPN2/OPM)
 │   ├── FmGenExtChip.h      fmgen PSG (SSG) ラッパー
 │   ├── FmEngine.h          複数チップ管理・SPSCキュー・ゲイン (YMEngine同名クラス)
 │   ├── WasapiOutput.h      WASAPI出力 (YMEngine からそのまま流用・無改造)
-│   ├── FmGenEngineApi.h       DLL公開 C ABI 宣言 (YMEngine からそのまま流用・無改造)
-│   ├── FmGenEngineApi.cpp     DLL公開 C ABI 実装 (fmgen バックエンド向けに実装)
+│   ├── FmGenEngineApi.h    DLL公開 C ABI 宣言 (YMEngine からそのまま流用・無改造)
+│   ├── FmGenEngineApi.cpp  DLL公開 C ABI 実装 (fmgen バックエンド向けに実装)
 │   ├── FmGenEngineApi.def
 │   ├── FmGenEngineApi.rc
-│   └── main.cpp            sample_app (YMEngine版を流用、対応5チップ向けに調整)
-├── patches/                 sample_app 用 JSON パッチ (対応5チップ分のみ)
-├── test_native/             Windows実機なしで fmgen DSP ロジックを検証するスモークテスト
+│   └── main.cpp            sample_app (YMEngine版を流用、対応7チップ向けに調整)
+├── patches/                sample_app 用 JSON パッチ (対応7チップ分)
 └── README.md (本ファイル)
 ```
 
 ## fmgen ソースについて
 
-`extern/fmgen/` には fmgen 0.08 のソース一式をそのまま配置する。
-**1 箇所だけソース上のバグを修正している** (詳細は次節)。
-それ以外のロジックは無改造。
+fmgen 0.08 は cisc 氏が制作した FM 音源エミュレータライブラリで、
+`extern/fmgen/` に同梱している。配布元は以下の URL を参照。
 
-### 文字エンコーディングについて
+> http://retropc.net/cisc/m88/
 
-fmgen 0.08 配布時点のソースは Shift_JIS (CP932) でエンコードされて
-いたが、本プロジェクトでは `extern/fmgen/` 以下の全ファイル
-(`readme.txt` を含む) を **UTF-8 に変換**して同梱している。
-これはバイトエンコーディングの変換のみであり、改行コード (CRLF) を
-含めテキストとしての内容・字句は一切変更していない。詳細は
-`extern/fmgen/ENCODING_NOTE.md` を参照。
+### fmgen ソースへの変更点
 
-### fmgen ソースへの変更点 (`extern/fmgen/opna.h`)
+本プロジェクトでは fmgen 0.08 のオリジナルソースに対して以下の変更を加えている。
+変更箇所にはすべて `[FmGenEngine]` マーカー付きコメントを付与している。
 
-`OPNB` (YM2610) クラスが、基底クラス `OPNABase` と同名・同型の
+**1. 文字エンコーディング変換 (全ファイル)**
+
+配布時点の Shift_JIS (CP932) から UTF-8 へ変換した。
+バイトエンコーディングの変換のみで、テキストとしての内容・字句は一切変更していない。
+詳細は `extern/fmgen/ENCODING_NOTE.md` を参照。
+
+**2. `opna.h` — OPNB クラスのバグ修正 (1行削除)**
+
+`OPNB` (YM2610) クラスが基底クラス `OPNABase` と同名・同型の
 `private Channel4 ch[6];` を重複定義しており、これが基底クラスの
-`protected Channel4 ch[6]` メンバを**名前隠蔽 (shadowing)** してしまう
-バグがあった。
+`protected Channel4 ch[6]` メンバを名前隠蔽 (shadowing) してしまうバグがあった。
 
 `OPNB::OPNB()` コンストラクタ内の `csmch = &ch[2];` はこの隠蔽により
 意図せず `OPNB::ch[2]` (未初期化の重複配列) を指してしまい、
-`OPNABase::FMMix()` 内の `fnum[csmch-ch]` という式
-(`OPNABase::ch` に対するポインタ差分のつもりが、異なる配列間の
-差分計算になってしまう) が未定義動作を起こし、CSM モードを使わない
-通常使用時 (`!(regtc & 0xc0)` が真の場合、つまりほぼ常に) に
-**OPNB が確実にクラッシュする**ことを確認した。
+`OPNABase::FMMix()` 内の `fnum[csmch-ch]` が異なる配列間の差分計算となって
+未定義動作を起こし、CSM モードを使わない通常使用時に OPNB が確実にクラッシュする。
 
-`OPNB` の実処理 (`Mix`/`Mix6`/`MixSubS` 等) はすべて `OPNABase` の
-メンバ関数であり、もともと `OPNABase::ch` のみを参照していて
-`OPNB::ch` はコンストラクタの `csmch` 初期化以外どこからも
-使われていなかった (デッドコード)。そのため `extern/fmgen/opna.h`
-内の重複宣言 `Channel4 ch[6];` (`OPNB` クラス内) を削除する 1 行のみの
-修正で安全に解消できる。修正箇所には改変理由を示すコメントを
-付している (`opna.h` 内 `[FmGenEngine]` で検索可能)。
+`OPNB` の実処理はすべて `OPNABase::ch` のみを参照していて `OPNB::ch` は
+コンストラクタの `csmch` 初期化以外で使われていなかったため、
+重複宣言 `Channel4 ch[6];` の 1 行削除で安全に解消できる。
 
-このバグ修正は `test_native/` のネイティブ検証テストで
-再現・修正確認を行っている。
+**3. `opna.h` — OPN2 クラス宣言の修正 (追加実装のため)**
+
+fmgen 0.08 の `OPN2` (YM2612) クラスはヘッダ宣言のみ存在し実装が皆無だった。
+本プロジェクトで完全実装するにあたり、オリジナルの 3ch+補間ワーク程度のスケルトン
+宣言を 6ch + DAC チャンネル対応に修正した。
+
+**4. `opna_ext.h` / `opna_ext.cpp` — OPN2 / OPNBB の追加実装 (新規ファイル)**
+
+fmgen 0.08 に存在しない以下のクラスを新たに実装した。
+
+- **`FM::OPNBB` (YM2610B)**: `OPNB` の派生クラス。`OPNB` との唯一の差分は
+  レジスタ `0x29` の扱いで、`OPNB` はこのレジスタへの書き込みを無視するが、
+  `OPNBB` は `reg29` を正しく更新することで CH3〜5 の有効/無効制御を可能にする。
+
+- **`FM::OPN2` (YM2612)**: `OPNBase` を継承した FM 6ch + DAC チャンネルの実装。
+  SSG / ADPCM なし。ポート 0 (0x000-0x0FF) が CH1〜3、ポート 1 (0x100-0x1FF) が
+  CH4〜6 に対応する。DAC チャンネルはレジスタ `0x2B` bit7=1 で有効化し、
+  `0x2A` に書き込んだ 8bit PCM 値を CH6 の代わりに出力する。
+  YM2612 の内部 FM クロックは `masterClock/144` であるため、fmgen の
+  `SetPrescaler` (内部で `clock/72` を計算) との整合を取るため
+  `SetRate` 内で `clock/2` を渡す補正を行っている。
 
 ## ライセンス
 
 本プロジェクトは複数のライセンスが混在するコンポーネント構成になっている。
-**FmGenEngine 独自のラッパー・エンジンコード (`src/` および
-`test_native/`) は MIT License** とする (YMEngine と同じライセンス)。
-全文はリポジトリルートの [`LICENSE`](./LICENSE) を参照。
+**FmGenEngine 独自のラッパー・エンジンコード (`src/`) は MIT License** とする
+(YMEngine と同じライセンス)。全文はリポジトリルートの [`LICENSE`](./LICENSE) を参照。
 
 | コンポーネント | パス | ライセンス |
 |---|---|---|
-| FmGenEngine ラッパー・エンジンコード | `src/`, `test_native/`, `CMakeLists.txt` | **MIT** ([`LICENSE`](./LICENSE) 参照) |
-| fmgen 本体 | `extern/fmgen/` | cisc (1998, 2003) オリジナルライセンス (MIT非互換、下記参照) |
+| FmGenEngine ラッパー・エンジンコード | `src/`, `CMakeLists.txt` | **MIT** ([`LICENSE`](./LICENSE) 参照) |
+| fmgen 本体 + 追加実装 | `extern/fmgen/` | cisc (1998, 2003) オリジナルライセンス (MIT非互換、下記参照) |
 | nlohmann/json | `extern/nlohmann_json/` | MIT (nlohmann) |
 
-- **FmGenEngine 独自コード (`src/`, `test_native/`)**: MIT License。
+- **FmGenEngine 独自コード (`src/`)**: MIT License。
   `src/FmGenEngineApi.h` / `src/WasapiOutput.h` / `src/main.cpp` は
   YMEngine 本家 (MIT License) から流用・改変したものだが、
   YMEngine 自体が MIT License のため引き続き MIT として扱う。
   各ファイル冒頭に `SPDX-License-Identifier: MIT` を明記している。
 - **fmgen**: cisc (1998, 2003) によるオリジナルライセンス。
   **MIT ではない**ため取り扱いに注意。
-  `extern/fmgen/readme.txt` に全文を同梱 (UTF-8 変換済み、内容は原文と
-  同一。詳細は `extern/fmgen/ENCODING_NOTE.md` 参照)。要約:
+  `extern/fmgen/readme.txt` に全文を同梱 (UTF-8 変換済み、内容は原文と同一)。要約:
   - 由来 (作者・著作権) を明記すること
   - 配布する際はフリーソフトとすること
   - 改変したソースコードを配布する際は改変内容を明示すること
-    (→ 本プロジェクトでは `opna.h` 内のコメントで明示している)
+    (→ 本プロジェクトでは `[FmGenEngine]` コメントおよび本節で明示している)
   - ソースコードを配布する際はこの readme.txt を一切改変せずに添付すること
   - 商用ソフトへの組み込みには作者の事前合意が必要
 - **nlohmann/json**: MIT (nlohmann)
@@ -161,45 +169,6 @@ cmake --build build --config Release
 #   build/bin/patches/
 ```
 
-## ビルド (MinGW-w64 クロスコンパイル / 検証用)
-
-開発・CI 環境に Windows がなくても、Linux 上で MinGW-w64 を使って
-本物の `.dll`/`.exe` (PE32+ バイナリ) を生成できることを確認済み。
-
-```bash
-cmake -B build-mingw -G "Unix Makefiles" \
-  -DCMAKE_SYSTEM_NAME=Windows \
-  -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc \
-  -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
-  -DCMAKE_RC_COMPILER=x86_64-w64-mingw32-windres
-cmake --build build-mingw
-```
-
-(`CMakeLists.txt` 内、`if (MINGW)` ブロックで `INITGUID` 定義と
-`ksguid` リンクを追加している。これは MinGW 環境固有の
-PROPERTYKEY/GUID 定数の解決のためで、MSVC ビルドには無関係・無影響)
-
-## fmgen DSP ロジックの動作検証 (Windows 実機不要)
-
-`test_native/` に、WASAPI を介さず fmgen コア DSP ロジック
-(レジスタ書き込み → サンプル生成) のみを Linux ネイティブで
-検証するスモークテストを用意している。
-
-```bash
-sh test_native/build_and_run.sh
-```
-
-`windows.h` は `test_native/winstub/windows.h` という最小スタブ
-(`MAX_PATH` / `__stdcall` の空展開 / `HANDLE` の代替 typedef のみ)
-に差し替え、`FileIO` はファイル I/O を行わないダミー実装
-(`test_native/file_stub.cpp`) で代替している。
-これにより MinGW すら不要で、通常の Linux 用 g++ だけで
-OPN/OPNA/OPNB/OPM/SSG 各チップが実際に非無音の音声サンプルを
-生成すること、`FmEngine` (複数チップ管理・ゲイン・SPSCキュー・
-ソフトクリップ) が正しく動作すること、`SetMemory` (ADPCM) 経路や
-ポート1 (`addr+0x100`) レジスタ書き込みが正しく機能することを
-検証できる。
-
 ## DLL の使い方
 
 ### YMEngine との切り替え
@@ -226,7 +195,7 @@ OPN/OPNA/OPNB/OPM/SSG 各チップが実際に非無音の音声サンプルを
 #pragma comment(lib, "FmGenEngineApi.lib")
 ```
 
-`FmGenEngineApi.h` は YMEngine と完全に同一なので、使い方も同一。
+`FmGenEngineApi.h` の関数シグネチャは YMEngine の `FmEngineApi.h` と完全に同一。
 
 ```c
 #include "FmGenEngineApi.h"
@@ -246,7 +215,7 @@ WasapiHandle wasapi = Wasapi_Create(eng, 0);
 Wasapi_Start(wasapi);
 
 FmEngine_Write(eng, opnaId, 0xB4, 0xC0, 0);   // port=0
-FmEngine_Write(eng, opnaId, 0x10, 0x0F, 1);   // port=1 (OPNA/OPNB の拡張レジスタ面 = addr+0x100)
+FmEngine_Write(eng, opnaId, 0x10, 0x0F, 1);   // port=1 (OPNA/OPNB 拡張レジスタ面 = addr+0x100)
 
 Wasapi_Stop(wasapi);
 Wasapi_Destroy(wasapi);
@@ -277,7 +246,7 @@ FmEngine_LoadRhythmSamples(eng, opnaId, "C:\\path\\to\\samples\\");
 `sample_app.exe` は実行ファイルと同じフォルダから自動的にこれらの
 WAV ファイルを探してロードする。
 
-### OPNA / OPNB の ADPCM メモリ設定
+### OPNA / OPNB / OPNBB の ADPCM メモリ設定
 
 `FmEngine_SetMemory` は YMEngine と同じシグネチャだが、内部動作が
 異なる点に注意。
@@ -285,7 +254,7 @@ WAV ファイルを探してロードする。
 - **OPNA**: `FM_MEM_ADPCM_B` のみ対応。OPNA 内部の 256KB ADPCM-B RAM
   バッファへ `memcpy` する (`FM_MEM_ADPCM_A` は OPNA では未使用。
   リズムは `FmEngine_LoadRhythmSamples` 経由の WAV で代替するため)。
-- **OPNB**: `FM_MEM_ADPCM_A` / `FM_MEM_ADPCM_B` の両方に対応。
+- **OPNB / OPNBB**: `FM_MEM_ADPCM_A` / `FM_MEM_ADPCM_B` の両方に対応。
   fmgen の `OPNB::Init` がポインタを直接保持する設計のため、
   `SetMemory` 呼び出し時に内部で `Init` を再実行する。
   **これによりレジスタ状態が `Reset()` される**ため、
@@ -311,20 +280,13 @@ fmgen は ymfm 版と異なり、`Init`/`SetRate` に直接ターゲットサン
 
 | チップ | 標準クロック |
 |---|---|
-| OPN  | 3,993,600 Hz |
-| OPNA | 7,987,200 Hz |
-| OPNB | 8,000,000 Hz |
-| OPM  | 3,579,545 Hz |
-| SSG  | 3,579,545 Hz |
+| OPN   | 3,993,600 Hz |
+| OPNA  | 7,987,200 Hz |
+| OPNB  | 8,000,000 Hz |
+| OPNBB | 8,000,000 Hz |
+| OPN2  | 7,670,453 Hz |
+| OPM   | 3,579,545 Hz |
+| SSG   | 3,579,545 Hz |
 
 `FmEngine_AddChip` / `FmEngine_AddExtChip` に `clock=0` を渡すと
 上記の標準クロックが自動選択される。
-
-## 既知の制約
-
-- OPNB (YM2610) は実機仕様上 CH0 / CH3 が FM チャンネルとして
-  使用できない (ADPCM 専用)。`patches/opnb.json` は CH1/2/4/5 を使う。
-- fmgen 0.08 は YM2610B (OPNBB) 相当の差分実装を持たないため非対応。
-- WASAPI / fmgen ともに Windows 専用 API に依存するため、
-  本番ビルドは Windows (MSVC または MinGW) 限定。
-  (`test_native/` のスモークテストのみ Linux ネイティブで実行可能)
