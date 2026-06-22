@@ -315,7 +315,7 @@ inline void OpnFamilyChip<FM::OPNB, FmGenChipType::OPNB>::setMemoryImpl(
     // OPNB::Init はレジスタ・チャンネル状態を Reset() するため、
     // 既存の発音状態は失われる (内部で Reset() が呼ばれる)。
     // YMEngine の FmEngine_SetMemory と同じ運用制約
-    // (Wasapi_Start より前、AddChip 直後に呼ぶこと) であれば問題にならない。
+    // (ストリーム開始前、AddChip 直後に呼ぶこと) であれば問題にならない。
     m_chip.Init(m_clock, m_native_rate, false,
                 const_cast<uint8_t*>(m_adpcmAData), static_cast<int>(m_adpcmASize),
                 const_cast<uint8_t*>(m_adpcmBData), static_cast<int>(m_adpcmBSize));

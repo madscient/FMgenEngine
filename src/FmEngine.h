@@ -11,8 +11,7 @@
 // オーディオコールバック向けのサンプル生成 API を提供する。
 //
 // YMEngine (ymfm版) src/FmEngine.h と同名・同シグネチャのクラスとして
-// 実装することで、WasapiOutput.h (無改造で流用) や FmEngineApi.cpp の
-// 構造をそのまま踏襲できるようにしている。
+// 実装することで、FmEngineApi.cpp の構造をそのまま踏襲できるようにしている。
 // 中身が保持するチップは ymfm 製ではなく fmgen 製 (FmGenChip/FmGenExtChip)。
 //
 // MSVC 対応:

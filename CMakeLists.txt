@@ -10,16 +10,9 @@ project(FmGenEngineApi VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if (NOT WIN32)
-    message(FATAL_ERROR
-        "FmGenEngine は WASAPI / fmgen (Windows API 依存) を使用するため "
-        "Windows (MSVC または MinGW) 専用です。")
-endif()
-
 # -------------------------------------------------------
 #  fmgen ソースのパス
-#  オリジナル (cisc, 1998-2003) を無改造のまま配置すること。
-#  入手先: http://www retropc net 配布の fmgen008.lzh 等
+#  配布元: http://retropc.net/cisc/m88/
 #  (本リポジトリでは extern/fmgen 以下に展開済みのものを同梱)
 # -------------------------------------------------------
 set(FMGEN_DIR "${CMAKE_SOURCE_DIR}/extern/fmgen" CACHE PATH "fmgen source dir")
@@ -31,14 +24,8 @@ if (NOT EXISTS "${FMGEN_DIR}/opna.cpp")
         "  ${FMGEN_DIR} に配置してください。")
 endif()
 
-# -------------------------------------------------------
-#  nlohmann/json (sample_app の JSON パッチ読み込みに使用)
-#  git submodule add https://github.com/nlohmann/json extern/nlohmann_json
-# -------------------------------------------------------
-set(NLOHMANN_DIR "${CMAKE_SOURCE_DIR}/extern/nlohmann_json/single_include" CACHE PATH "nlohmann/json include dir")
-
 # =======================================================
-#  ターゲット 1: FmGenEngineApi.dll (fmgen バックエンド)
+#  ターゲット: FmGenEngineApi.dll (fmgen バックエンド)
 # =======================================================
 add_library(FmEngineApi SHARED
     src/FmGenEngineApi.cpp
@@ -85,12 +72,10 @@ if (MSVC)
     )
 endif()
 
-# WASAPI / COM リンク
-target_link_libraries(FmEngineApi PRIVATE
-    ole32
-    uuid
-    avrt
-)
+# COM リンク (CLSID 等に必要)
+if (WIN32)
+    target_link_libraries(FmEngineApi PRIVATE ole32 uuid)
+endif()
 
 # バージョン情報を DLL に埋め込む (Windows リソース)
 if (MSVC)
@@ -98,8 +83,6 @@ if (MSVC)
 endif()
 
 # MSVC 最適化・警告設定
-# fmgen 本体は古い C++ コードのため警告は抑制気味にする
-# (オリジナルソースは無改造方針のため、警告修正のための改変はしない)
 if (MSVC)
     target_compile_options(FmEngineApi PRIVATE
         /Oi /GL /utf-8
@@ -117,54 +100,12 @@ if (MSVC)
 endif()
 
 # =======================================================
-#  ターゲット 2: sample_app.exe  (使用例。YMEngine 版を流用)
-#  DLL の .lib にリンクする形でビルド
-# =======================================================
-add_executable(sample_app src/main.cpp)
-
-target_include_directories(sample_app PRIVATE
-    src/
-    ${NLOHMANN_DIR}
-)
-
-target_link_libraries(sample_app PRIVATE FmEngineApi)
-
-if (MSVC)
-    set_target_properties(sample_app PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-    )
-    target_compile_options(sample_app PRIVATE /W3 /wd4100 /utf-8)
-endif()
-
-# patches/ ディレクトリの JSON ファイルをビルド出力ディレクトリにコピー
-set(PATCHES_SRC_DIR "${CMAKE_SOURCE_DIR}/patches")
-if (EXISTS "${PATCHES_SRC_DIR}")
-    file(GLOB PATCH_FILES "${PATCHES_SRC_DIR}/*.json")
-    foreach(PATCH_FILE ${PATCH_FILES})
-        add_custom_command(TARGET sample_app POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:sample_app>/patches"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${PATCH_FILE}"
-                "$<TARGET_FILE_DIR:sample_app>/patches/"
-            COMMENT "Copying ${PATCH_FILE}"
-        )
-    endforeach()
-    file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/bin/patches")
-    foreach(PATCH_FILE ${PATCH_FILES})
-        configure_file("${PATCH_FILE}" "${CMAKE_BINARY_DIR}/bin/patches/" COPYONLY)
-    endforeach()
-else()
-    message(WARNING "patches/ directory not found at ${PATCHES_SRC_DIR}")
-endif()
-
-# =======================================================
 #  インストール規則 (任意)
 #  cmake --install build --prefix install_dir
 # =======================================================
 install(TARGETS FmEngineApi
     RUNTIME DESTINATION bin          # .dll
-    LIBRARY DESTINATION lib          # .so (未使用、Windows専用のため)
+    LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib          # .lib (import library)
 )
 install(FILES src/FmGenEngineApi.h DESTINATION include)
