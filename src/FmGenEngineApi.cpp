@@ -8,22 +8,21 @@
 //
 // YMEngine (ymfm版) の FmEngineApi.cpp と ABI 完全互換になるよう、
 // 関数シグネチャ・enum 値・挙動を可能な限り合わせている。
-// sample_app.exe は本 DLL にリンクするだけでそのまま動作する想定。
 //
 // 対応チップ:
 //   FM_CHIP_OPN / FM_CHIP_OPNA / FM_CHIP_OPNB / FM_CHIP_OPNBB /
 //   FM_CHIP_OPN2 / FM_CHIP_OPM / FM_CHIP_EXT_SSG
-// 非対応チップ (Y8950/OPL系/OPL3/OPL4/OPNBB/OPN2/OPLL系/OPZ/VRC7/
-//               DCSG/SCC/SAA) は FM_ERR_INVALID_ARG を返す。
+// 非対応チップは FM_ERR_INVALID_ARG を返す。
+// 非対応チップ (Y8950/OPL系/OPL3/OPL4/OPLL系/OPZ/VRC7/DCSG/SCC/SAA)
+// は FM_ERR_INVALID_ARG を返す。
 //
-// このファイルだけが FmEngine / WasapiOutput の C++ ヘッダを include する。
+// このファイルだけが FmEngine の C++ ヘッダを include する。
 // DLL 境界をまたぐのは POD 型と不透明ポインタだけ。
 
 #define FMENGINE_EXPORTS  // dllexport として定義
 #include "FmGenEngineApi.h"
 
 #include "FmEngine.h"
-#include "WasapiOutput.h"
 
 #include <new>
 #include <stdexcept>
@@ -34,14 +33,6 @@
 struct FmEngineOpaque {
     FmEngine engine;
     explicit FmEngineOpaque(uint32_t sr) : engine(sr) {}
-};
-
-struct WasapiOpaque {
-    WasapiOutput output;
-    WasapiOpaque(FmEngine& e, bool excl)
-        : output(e, excl) {}
-    WasapiOpaque(FmEngine& e, bool excl, const std::wstring& device_id)
-        : output(e, excl, device_id) {}
 };
 
 // =========================================================
@@ -240,91 +231,4 @@ FmEngine_Generate(FmEngineHandle h,
     return safeCall([&] {
         static_cast<FmEngineOpaque*>(h)->engine.generate(out_l, out_r, samples);
     });
-}
-
-// =========================================================
-//  WasapiOutput API 実装
-// =========================================================
-
-FMENGINE_API WasapiHandle FMENGINE_CALL
-Wasapi_Create(FmEngineHandle h, int exclusive) {
-    if (!h) return nullptr;
-    auto& eng = static_cast<FmEngineOpaque*>(h)->engine;
-    return new(std::nothrow) WasapiOpaque(eng, exclusive != 0);
-}
-
-// =========================================================
-//  デバイスキャッシュ (Wasapi_GetDevice* 系の内部状態)
-//  Wasapi_GetDeviceCount() を呼ぶたびに列挙し直す。
-// =========================================================
-static std::vector<WasapiDeviceInfo> s_deviceCache;
-
-FMENGINE_API WasapiHandle FMENGINE_CALL
-Wasapi_CreateWithDevice(FmEngineHandle h, int exclusive, const wchar_t* device_id) {
-    if (!h || !device_id) return nullptr;
-    auto& eng = static_cast<FmEngineOpaque*>(h)->engine;
-    try {
-        auto* p = new(std::nothrow) WasapiOpaque(eng, exclusive != 0,
-                                                  std::wstring(device_id));
-        return static_cast<WasapiHandle>(p);
-    } catch (...) {
-        return nullptr;
-    }
-}
-
-FMENGINE_API uint32_t FMENGINE_CALL
-Wasapi_GetDeviceCount(void) {
-    try {
-        s_deviceCache = enumerateWasapiDevices();
-    } catch (...) {
-        s_deviceCache.clear();
-    }
-    return static_cast<uint32_t>(s_deviceCache.size());
-}
-
-FMENGINE_API FmResult FMENGINE_CALL
-Wasapi_GetDeviceId(uint32_t index, wchar_t* buf, uint32_t buf_len) {
-    if (!buf || index >= s_deviceCache.size()) return FM_ERR_INVALID_ARG;
-    const std::wstring& id = s_deviceCache[index].id;
-    if (buf_len == 0) return FM_ERR_INVALID_ARG;
-    wcsncpy_s(buf, buf_len, id.c_str(), _TRUNCATE);
-    return FM_OK;
-}
-
-FMENGINE_API FmResult FMENGINE_CALL
-Wasapi_GetDeviceName(uint32_t index, wchar_t* buf, uint32_t buf_len) {
-    if (!buf || index >= s_deviceCache.size()) return FM_ERR_INVALID_ARG;
-    const std::wstring& name = s_deviceCache[index].name;
-    if (buf_len == 0) return FM_ERR_INVALID_ARG;
-    wcsncpy_s(buf, buf_len, name.c_str(), _TRUNCATE);
-    return FM_OK;
-}
-
-FMENGINE_API int FMENGINE_CALL
-Wasapi_IsDefaultDevice(uint32_t index) {
-    if (index >= s_deviceCache.size()) return 0;
-    return s_deviceCache[index].isDefault ? 1 : 0;
-}
-
-FMENGINE_API void FMENGINE_CALL
-Wasapi_Destroy(WasapiHandle h) {
-    delete static_cast<WasapiOpaque*>(h);
-}
-
-FMENGINE_API FmResult FMENGINE_CALL
-Wasapi_Start(WasapiHandle h) {
-    REQUIRE_PTR(h);
-    return safeCall([&] { static_cast<WasapiOpaque*>(h)->output.start(); });
-}
-
-FMENGINE_API FmResult FMENGINE_CALL
-Wasapi_Stop(WasapiHandle h) {
-    REQUIRE_PTR(h);
-    return safeCall([&] { static_cast<WasapiOpaque*>(h)->output.stop(); });
-}
-
-FMENGINE_API uint32_t FMENGINE_CALL
-Wasapi_GetSampleRate(WasapiHandle h) {
-    if (!h) return 0;
-    return static_cast<WasapiOpaque*>(h)->output.sampleRate();
 }

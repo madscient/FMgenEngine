@@ -24,11 +24,10 @@ SOFTWARE.
 
 NOTE: This MIT License applies only to the FmGenEngine wrapper/engine code
 located under `src/` (FmGenChip.h, FmGenExtChip.h, FmEngine.h,
-FmGenEngineApi.h/.cpp/.def/.rc, WasapiOutput.h, main.cpp).
+FmGenEngineApi.h/.cpp/.def/.rc).
 
 It does NOT apply to:
   - `extern/fmgen/` — fmgen by cisc (1998, 2003), under its own original
     license. See `extern/fmgen/readme.txt` for full terms.
-  - `extern/nlohmann_json/` — nlohmann/json, MIT License (Niels Lohmann).
 
 See README.md "ライセンス" section for details on each component's license.
