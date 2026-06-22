@@ -67,7 +67,16 @@ bool OPN2::Init(uint c, uint r, bool ipflag, const char*)
 
 bool OPN2::SetRate(uint c, uint r, bool /*ipflag*/)
 {
-    OPNBase::Init(c, r);
+    // YM2612 (OPN2) の FM クロックは masterClock/144 だが、
+    // fmgen の OPNBase::SetPrescaler は clock/6/12 = clock/72 で
+    // fmclock を計算する。これはYM2203(OPN)向けの設計で、
+    // YM2612 に 7.67MHz をそのまま渡すと fmclock = 7670453/72 ≒ 106534 Hz
+    // となり、正しい値 7670453/144 ≒ 53267 Hz の2倍 (1オクターブ高い) になる。
+    // clock を 2 で割ってから渡すことで fmclock = clock/2/72 = clock/144 が得られ
+    // YM2203 との周波数整合が取れる。
+    // (内部 ratio / chip.SetRatio もこの値を使うため PSG なし・ADPCM なしの
+    //  OPN2 では副作用はない。タイマー精度も clock/2 ベースになるが許容範囲内)
+    OPNBase::Init(c / 2, r);
     RebuildTimeTable();
     return true;
 }
