@@ -10,7 +10,7 @@
 //
 // FmGenEngine チップテスト (fmgen バックエンド版)
 // YMEngine (ymfm版) の sample_app (src/main.cpp) を流用し、
-// fmgen が対応する 5 チップ (OPN/OPNA/OPNB/OPM/SSG) 向けに調整したもの。
+// fmgen が対応する 7 チップ (OPN/OPNA/OPNB/OPNBB/OPN2/OPM/SSG) 向けに調整したもの。
 //
 // 使い方:
 //   sample_app.exe [オプション] [file1.json] [file2.json] ...
@@ -26,8 +26,8 @@
 //   実行ファイルと同じフォルダに以下が存在すれば自動的にロードする。
 //     2608_BD.WAV 等 6 種     : OPNA リズムサンプル (FmEngine_LoadRhythmSamples)
 //     ym2608_adpcmb.bin       : OPNA ADPCM-B RAM 初期値 (任意)
-//     ym2610_adpcma.rom       : OPNB ADPCM-A ROM (任意)
-//     ym2610_adpcmb.rom       : OPNB ADPCM-B ROM (任意)
+//     ym2610_adpcma.rom       : OPNB / OPNBB ADPCM-A ROM (任意)
+//     ym2610_adpcmb.rom       : OPNB / OPNBB ADPCM-B ROM (任意)
 //   いずれも見つからない場合は該当チャンネルが無音になるだけで、
 //   FM/SSG チャンネルには影響しない。
 //
@@ -134,17 +134,22 @@ static const RomEntry kRomTable[] = {
     // OPNB (YM2610): ADPCM-A ROM + ADPCM-B ROM
     { "OPNB",  FM_MEM_ADPCM_A, "ym2610_adpcma.rom",  "YM2610 ADPCM-A ROM" },
     { "OPNB",  FM_MEM_ADPCM_B, "ym2610_adpcmb.rom",  "YM2610 ADPCM-B ROM" },
+    // OPNBB (YM2610B): ADPCM-A/B 構成は YM2610 と同一、同じROMファイルを流用
+    { "OPNBB", FM_MEM_ADPCM_A, "ym2610_adpcma.rom",  "YM2610B ADPCM-A ROM" },
+    { "OPNBB", FM_MEM_ADPCM_B, "ym2610_adpcmb.rom",  "YM2610B ADPCM-B ROM" },
 };
 
 struct ChipEntry { std::string name; bool isExt; int type; };
 
 // fmgen バックエンドが対応するチップのみ (OPN/OPNA/OPNB/OPM/SSG)
 static const ChipEntry kChipTable[] = {
-    {"OPN",  false, FM_CHIP_OPN  },
-    {"OPNA", false, FM_CHIP_OPNA },
-    {"OPNB", false, FM_CHIP_OPNB },
-    {"OPM",  false, FM_CHIP_OPM  },
-    {"SSG",  true,  FM_CHIP_EXT_SSG },
+    {"OPN",   false, FM_CHIP_OPN   },
+    {"OPNA",  false, FM_CHIP_OPNA  },
+    {"OPNB",  false, FM_CHIP_OPNB  },
+    {"OPNBB", false, FM_CHIP_OPNBB },
+    {"OPN2",  false, FM_CHIP_OPN2  },
+    {"OPM",   false, FM_CHIP_OPM   },
+    {"SSG",   true,  FM_CHIP_EXT_SSG },
 };
 
 static const ChipEntry* findChipEntry(const std::string& name) {
@@ -260,7 +265,7 @@ static void addChipsFromFile(FileContext& ctx, FmEngineHandle eng) {
 
         if (!entry) {
             printf("  [SKIP] %s : unsupported on fmgen backend "
-                   "(supported: OPN/OPNA/OPNB/OPM/SSG)\n", chipName.c_str());
+                   "(supported: OPN/OPNA/OPNB/OPNBB/OPN2/OPM/SSG)\n", chipName.c_str());
             ctx.slots.push_back({0, false});
             continue;
         }

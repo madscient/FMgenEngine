@@ -11,8 +11,8 @@
 // sample_app.exe は本 DLL にリンクするだけでそのまま動作する想定。
 //
 // 対応チップ:
-//   FM_CHIP_OPN / FM_CHIP_OPNA / FM_CHIP_OPNB / FM_CHIP_OPM
-//   FM_CHIP_EXT_SSG
+//   FM_CHIP_OPN / FM_CHIP_OPNA / FM_CHIP_OPNB / FM_CHIP_OPNBB /
+//   FM_CHIP_OPN2 / FM_CHIP_OPM / FM_CHIP_EXT_SSG
 // 非対応チップ (Y8950/OPL系/OPL3/OPL4/OPNBB/OPN2/OPLL系/OPZ/VRC7/
 //               DCSG/SCC/SAA) は FM_ERR_INVALID_ARG を返す。
 //
@@ -50,11 +50,13 @@ struct WasapiOpaque {
 // =========================================================
 static bool toFmGenChipType(FmChipType api_type, FmGenChipType& out) {
     switch (api_type) {
-        case FM_CHIP_OPN:  out = FmGenChipType::OPN;  return true;
-        case FM_CHIP_OPNA: out = FmGenChipType::OPNA; return true;
-        case FM_CHIP_OPNB: out = FmGenChipType::OPNB; return true;
-        case FM_CHIP_OPM:  out = FmGenChipType::OPM;  return true;
-        // 非対応 (ymfm 専用チップ): Y8950/OPL/OPL2/OPL3/OPL4/OPNBB/OPN2/
+        case FM_CHIP_OPN:   out = FmGenChipType::OPN;   return true;
+        case FM_CHIP_OPNA:  out = FmGenChipType::OPNA;  return true;
+        case FM_CHIP_OPNB:  out = FmGenChipType::OPNB;  return true;
+        case FM_CHIP_OPNBB: out = FmGenChipType::OPNBB; return true;
+        case FM_CHIP_OPN2:  out = FmGenChipType::OPN2;  return true;
+        case FM_CHIP_OPM:   out = FmGenChipType::OPM;   return true;
+        // 非対応 (ymfm 専用チップ): Y8950/OPL/OPL2/OPL3/OPL4/
         //                          OPLL/OPLLP/OPLLX/OPZ/VRC7
         default:
             return false;

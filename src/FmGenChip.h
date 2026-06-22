@@ -15,6 +15,8 @@
 //   OPN   (YM2203) ... FM::OPN
 //   OPNA  (YM2608) ... FM::OPNA  (ADPCM-B / リズム音源 内蔵)
 //   OPNB  (YM2610) ... FM::OPNB  (ADPCM-A / ADPCM-B 内蔵)
+//   OPNBB (YM2610B)... FM::OPNBB (OPNB 派生、FM 6ch 全有効 / FmGenEngine 追加)
+//   OPN2  (YM2612) ... FM::OPN2  (FM 6ch + DAC / FmGenEngine 追加)
 //   OPM   (YM2151) ... FM::OPM
 //   SSG   (YM2149) ... ::PSG     (外部ライブラリチップ扱い。ExtChip.h 参照)
 //
@@ -50,6 +52,7 @@
 #include "fmgen/types.h"
 #include "fmgen/fmgen.h"
 #include "fmgen/opna.h"
+#include "fmgen/opna_ext.h"   // OPN2 / OPNBB (FmGenEngine 追加実装)
 #include "fmgen/opm.h"
 #include "fmgen/psg.h"
 
@@ -70,6 +73,8 @@ enum class FmGenChipType {
     OPN,    // YM2203
     OPNA,   // YM2608
     OPNB,   // YM2610
+    OPNBB,  // YM2610B (FmGenEngine 追加実装)
+    OPN2,   // YM2612  (FmGenEngine 追加実装)
     OPM,    // YM2151
 };
 
@@ -77,11 +82,13 @@ enum class FmGenChipType {
 //  標準クロック定数 (実機準拠。YMEngine/FmChip.h の FmClock と同値)
 // =========================================================
 namespace FmGenClock {
-    constexpr uint32_t OPN  = 3'993'600;
-    constexpr uint32_t OPNA = 7'987'200;
-    constexpr uint32_t OPNB = 8'000'000;
-    constexpr uint32_t OPM  = 3'579'545;
-    constexpr uint32_t SSG  = 3'579'545;
+    constexpr uint32_t OPN   = 3'993'600;
+    constexpr uint32_t OPNA  = 7'987'200;
+    constexpr uint32_t OPNB  = 8'000'000;
+    constexpr uint32_t OPNBB = 8'000'000;  // YM2610B (OPNB と同クロック)
+    constexpr uint32_t OPN2  = 7'670'453;  // YM2612 (Mega Drive 標準)
+    constexpr uint32_t OPM   = 3'579'545;
+    constexpr uint32_t SSG   = 3'579'545;
 }
 
 // =========================================================
@@ -329,6 +336,106 @@ using FmGenOpnaChip = OpnFamilyChip<FM::OPNA, FmGenChipType::OPNA>;
 using FmGenOpnbChip = OpnFamilyChip<FM::OPNB, FmGenChipType::OPNB>;
 
 // =========================================================
+//  OPNBB (YM2610B) ラッパー
+//  FM::OPNBB は FM::OPNB の派生クラスのため、OpnFamilyChip テンプレートを
+//  そのまま使える。ADPCM-A/B の setMemory も OPNB と同一の実装を流用する。
+// =========================================================
+
+// name() 特殊化
+template<> inline const char*
+OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>::name() const {
+    return "OPNBB (YM2610B) [fmgen]";
+}
+
+// initImpl 特殊化 (OPNB と同じ引数列)
+template<>
+inline bool OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>::initImpl(uint32_t target_rate) {
+    return m_chip.Init(m_clock, target_rate, false, nullptr, 0, nullptr, 0);
+}
+
+// setMemoryImpl / memorySizeImpl: OPNB と完全に同じ実装
+template<>
+inline void OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>::setMemoryImpl(
+    FmGenAccessClass access_type, const uint8_t* data, uint32_t size) {
+    if (access_type == FmGenAccessClass::ADPCM_A) {
+        m_adpcmAData = data; m_adpcmASize = size;
+    } else if (access_type == FmGenAccessClass::ADPCM_B) {
+        m_adpcmBData = data; m_adpcmBSize = size;
+    } else {
+        return;
+    }
+    m_chip.Init(m_clock, m_native_rate, false,
+                const_cast<uint8_t*>(m_adpcmAData), static_cast<int>(m_adpcmASize),
+                const_cast<uint8_t*>(m_adpcmBData), static_cast<int>(m_adpcmBSize));
+}
+
+template<>
+inline uint32_t OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>::memorySizeImpl(
+    FmGenAccessClass access_type) const {
+    if (access_type == FmGenAccessClass::ADPCM_A) return m_adpcmASize;
+    if (access_type == FmGenAccessClass::ADPCM_B) return m_adpcmBSize;
+    return 0;
+}
+
+template<>
+inline bool OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>::loadRhythmSamplesImpl(
+    const char*) { return true; }
+
+// write: OPNB と同じポート変換 (port=1 → addr+0x100)
+// OpnFamilyChip::write はテンプレートで実装済みのため再定義不要。
+
+using FmGenOpnbbChip = OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>;
+
+// =========================================================
+//  OPN2 (YM2612) ラッパー
+//  FM::OPN2 は OPNBase 継承の独自クラス (opna_ext.h で実装)。
+//  OpnFamilyChip テンプレートは OPNB 系の ADPCM 管理メンバを持つため
+//  OPN2 には合わないので独立クラスとして実装する。
+// =========================================================
+class FmGenOpn2Chip final : public FmGenChip {
+public:
+    explicit FmGenOpn2Chip(uint32_t clock, uint32_t target_rate)
+        : m_clock(clock)
+    {
+        if (!m_chip.Init(m_clock, target_rate))
+            throw std::runtime_error("fmgen: OPN2::Init failed");
+        m_native_rate = target_rate;
+    }
+
+    // OPN2 もポート0/1 で CH1〜3 / CH4〜6 を分離する。
+    // port=1 → addr+0x100 に変換して FM::OPN2::SetReg に渡す。
+    void write(uint32_t port, uint8_t reg, uint8_t value) override {
+        const uint32_t addr = (port != 0)
+            ? (static_cast<uint32_t>(reg) + 0x100u)
+            : static_cast<uint32_t>(reg);
+        m_chip.SetReg(addr, value);
+    }
+
+    void generate(float* out_l, float* out_r, uint32_t samples) override {
+        if (samples == 0) return;
+        m_work.assign(static_cast<size_t>(samples) * 2, 0);
+        m_chip.Mix(m_work.data(), static_cast<int>(samples));
+        fmgen_detail::mixBufferToFloat(m_work, out_l, out_r, samples);
+    }
+
+    void setTargetRate(uint32_t target_rate) override {
+        m_chip.SetRate(m_clock, target_rate);
+        m_native_rate = target_rate;
+    }
+
+    uint32_t      nativeRate() const override { return m_native_rate; }
+    FmGenChipType type()       const override { return FmGenChipType::OPN2; }
+    uint32_t      clock()      const override { return m_clock; }
+    const char*   name()       const override { return "OPN2 (YM2612) [fmgen]"; }
+
+private:
+    FM::OPN2                m_chip;
+    uint32_t                 m_clock;
+    uint32_t                 m_native_rate = 0;
+    std::vector<FM::Sample>  m_work;
+};
+
+// =========================================================
 //  FmGenOpmChip — OPM (YM2151) ラッパー
 //  ポート概念なし・ADPCM/リズムなし
 // =========================================================
@@ -383,6 +490,10 @@ inline std::unique_ptr<FmGenChip> createFmGenChip(
             return std::make_unique<FmGenOpnaChip>(resolve(clock, FmGenClock::OPNA), target_rate);
         case FmGenChipType::OPNB:
             return std::make_unique<FmGenOpnbChip>(resolve(clock, FmGenClock::OPNB), target_rate);
+        case FmGenChipType::OPNBB:
+            return std::make_unique<FmGenOpnbbChip>(resolve(clock, FmGenClock::OPNBB), target_rate);
+        case FmGenChipType::OPN2:
+            return std::make_unique<FmGenOpn2Chip>(resolve(clock, FmGenClock::OPN2), target_rate);
         case FmGenChipType::OPM:
             return std::make_unique<FmGenOpmChip>(resolve(clock, FmGenClock::OPM), target_rate);
     }

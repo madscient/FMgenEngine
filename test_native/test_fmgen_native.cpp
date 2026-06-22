@@ -231,5 +231,84 @@ int main() {
         printf("softclip bound check: peak<=1.0 -> %s\n", peak <= 1.0f ? "OK" : "FAIL");
     }
 
+    // --- OPNBB (YM2610B) ---
+    {
+        auto chip = createFmGenChip(FmGenChipType::OPNBB, 0, SR);
+        testChip("OPNBB", *chip, {
+            // CH1 (FM 6ch 全開放版 OPNB)
+            {0, 0xb1, 0x04}, {0, 0xb5, 0x80},
+            {0, 0x31, 0x71}, {0, 0x41, 0x23}, {0, 0x51, 0x9F}, {0, 0x61, 0x05},
+            {0, 0x71, 0x02}, {0, 0x81, 0x11}, {0, 0x35, 0x0D}, {0, 0x45, 0x2D},
+            {0, 0x55, 0x9F}, {0, 0x65, 0x05}, {0, 0x75, 0x02}, {0, 0x85, 0x11},
+            {0, 0x39, 0x33}, {0, 0x49, 0x26}, {0, 0x59, 0x9F}, {0, 0x69, 0x05},
+            {0, 0x79, 0x02}, {0, 0x89, 0x11}, {0, 0x3d, 0x01}, {0, 0x4d, 0x00},
+            {0, 0x5d, 0x9F}, {0, 0x6d, 0x07}, {0, 0x7d, 0x02}, {0, 0x8d, 0x11},
+            {0, 0xa5, 0x1d}, {0, 0xa1, 0x6a},
+            {0, 0x28, 0xf1},
+        });
+    }
+
+    // --- OPNBB reg29 書き込みテスト (OPNB との差分を検証) ---
+    // reg29=0x00 にすると CH3-5 が無効化される (OPNBB のみ有効、OPNB は無視)
+    {
+        auto chip = createFmGenChip(FmGenChipType::OPNBB, 0, SR);
+        chip->write(0, 0x29, 0x00);  // CH3-5 無効化
+        // CH4 (port1 のチャンネル) を設定してもサイレントになるはず
+        std::vector<float> l(SR), r(SR);
+        // フル設定してもCH4は無効
+        chip->write(1, 0xb1, 0x04); chip->write(1, 0xb5, 0x80);
+        chip->write(1, 0x31, 0x71); chip->write(1, 0x41, 0x23);
+        chip->write(1, 0x51, 0x9F); chip->write(1, 0x61, 0x05);
+        chip->write(1, 0x71, 0x02); chip->write(1, 0x81, 0x11);
+        chip->write(1, 0x35, 0x0D); chip->write(1, 0x45, 0x2D);
+        chip->write(1, 0x55, 0x9F); chip->write(1, 0x65, 0x05);
+        chip->write(1, 0x75, 0x02); chip->write(1, 0x85, 0x11);
+        chip->write(1, 0x39, 0x33); chip->write(1, 0x49, 0x26);
+        chip->write(1, 0x59, 0x9F); chip->write(1, 0x69, 0x05);
+        chip->write(1, 0x79, 0x02); chip->write(1, 0x89, 0x11);
+        chip->write(1, 0x3d, 0x01); chip->write(1, 0x4d, 0x00);
+        chip->write(1, 0x5d, 0x9F); chip->write(1, 0x6d, 0x07);
+        chip->write(1, 0x7d, 0x02); chip->write(1, 0x8d, 0x11);
+        chip->write(1, 0xa5, 0x1d); chip->write(1, 0xa1, 0x6a);
+        chip->write(0, 0x28, 0xf4);  // CH4 keyon
+        chip->generate(l.data(), r.data(), SR);
+        float peak = 0;
+        for (uint32_t i = 0; i < SR; ++i) peak = std::max(peak, std::abs(l[i]));
+        printf("[%-20s] OPNBB reg29=0 CH4: peak=%.5f  %s\n",
+               "OPNBB(reg29=0)", peak,
+               peak < 0.0001f ? "OK (CH3-5 disabled)" : "WARN (unexpected sound!)");
+    }
+
+    // --- OPN2 (YM2612) FM 6ch ---
+    {
+        auto chip = createFmGenChip(FmGenChipType::OPN2, 0, SR);
+        testChip("OPN2(FM)", *chip, {
+            {0, 0xb0, 0x04}, {0, 0xb4, 0xc0},
+            {0, 0x30, 0x71}, {0, 0x40, 0x23}, {0, 0x50, 0x9F}, {0, 0x60, 0x05},
+            {0, 0x70, 0x02}, {0, 0x80, 0x11}, {0, 0x34, 0x0D}, {0, 0x44, 0x2D},
+            {0, 0x54, 0x9F}, {0, 0x64, 0x05}, {0, 0x74, 0x02}, {0, 0x84, 0x11},
+            {0, 0x38, 0x33}, {0, 0x48, 0x26}, {0, 0x58, 0x9F}, {0, 0x68, 0x05},
+            {0, 0x78, 0x02}, {0, 0x88, 0x11}, {0, 0x3c, 0x01}, {0, 0x4c, 0x00},
+            {0, 0x5c, 0x9F}, {0, 0x6c, 0x07}, {0, 0x7c, 0x02}, {0, 0x8c, 0x11},
+            {0, 0xa4, 0x1c}, {0, 0xa0, 0xd5},
+            {0, 0x28, 0xf0},  // CH1 keyon
+        });
+    }
+
+    // --- OPN2 DAC テスト ---
+    {
+        auto chip = createFmGenChip(FmGenChipType::OPN2, 0, SR);
+        chip->write(0, 0x2b, 0x80);   // DAC 有効
+        chip->write(0, 0x2a, 0xff);   // 最大値
+        std::vector<float> l(SR), r(SR);
+        chip->generate(l.data(), r.data(), SR);
+        float peak = 0;
+        for (uint32_t i = 0; i < SR; ++i) peak = std::max(peak, std::abs(l[i]));
+        printf("[%-20s] name=%-28s DAC peak=%.5f  %s\n",
+               "OPN2(DAC)", chip->name(), peak,
+               peak > 0.0001f ? "OK (DAC output)" : "WARN (silent!)");
+    }
+
     return 0;
 }
+
