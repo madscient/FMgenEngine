@@ -24,7 +24,7 @@ SOFTWARE.
 
 NOTE: This MIT License applies only to the FmGenEngine wrapper/engine code
 located under `src/` (FmGenChip.h, FmGenExtChip.h, FmEngine.h,
-FmEngineApi.h/.cpp/.def/.rc, WasapiOutput.h, main.cpp) and the test harness
+FmGenEngineApi.h/.cpp/.def/.rc, WasapiOutput.h, main.cpp) and the test harness
 under `test_native/`.
 
 It does NOT apply to:
