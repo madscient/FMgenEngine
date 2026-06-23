@@ -132,17 +132,26 @@ cmake --build build --config Release
 | DLL | `FmEngineApi.dll` | `FmGenEngineApi.dll` |
 | インポートライブラリ | `FmEngineApi.lib` | `FmGenEngineApi.lib` |
 | ヘッダ | `FmEngineApi.h` | `FmGenEngineApi.h` |
-| 関数名・型名 | 共通 | 共通 |
+| 関数名・シグネチャ | 共通 | 共通 |
+
+チップは文字列で指定する。対応チップ一覧は `FmEngine_Inquiry` /
+`FmEngine_GetSupportedChip` で実行時に取得できる。
 
 ```c
-// fmgen バックエンド版 (FmGenEngine)
 #include "FmGenEngineApi.h"
 #pragma comment(lib, "FmGenEngineApi.lib")
 
 FmEngineHandle eng = FmEngine_Create(48000);
 
+// 対応チップ一覧を取得
+uint32_t n = FmEngine_Inquiry(eng);
+for (uint32_t i = 0; i < n; ++i)
+    printf("%s ", FmEngine_GetSupportedChip(eng, i));
+// → OPN OPNA OPNB OPNBB OPN2 OPM SSG
+
+// チップを文字列で追加
 uint32_t opnaId;
-FmEngine_AddChip(eng, FM_CHIP_OPNA, 0, &opnaId);
+FmEngine_AddChip(eng, "OPNA", 0, &opnaId);  // clock=0 で標準クロック
 FmEngine_SetGain(eng, opnaId, 1.0f, 1.0f);
 
 // レジスタ書き込み (任意スレッドから可)
@@ -156,32 +165,23 @@ FmEngine_Generate(eng, out_l, out_r, 512);
 FmEngine_Destroy(eng);
 ```
 
-### [fmgen 固有拡張] OPNA リズムサンプル読み込み
-
-YMEngine (ymfm版) には存在しない追加 API。既存関数の ABI は維持される。
-
-fmgen の OPNA はリズム音源を WAV ファイル
-(`2608_BD.WAV` / `2608_SD.WAV` / `2608_TOP.WAV` / `2608_HH.WAV` /
-`2608_TOM.WAV` / `2608_RIM.WAV`) から読み込む設計になっている。
-
-```c
-FmEngine_AddChip(eng, FM_CHIP_OPNA, 0, &opnaId);
-// dir_path: WAV ファイルが置かれているディレクトリ ('\' or '/' 終端)
-FmEngine_LoadRhythmSamples(eng, opnaId, "C:\\path\\to\\samples\\");
-// ストリーム開始前、AddChip 直後に呼ぶこと (スレッドセーフではない)
-```
-
 ### ADPCM メモリ設定
 
 ```c
 // OPNA: ADPCM-B RAM 初期値
-FmEngine_SetMemory(eng, opnaId, FM_MEM_ADPCM_B, data, size);
+// (FM_MEM_ADPCM_A は fmgen の OPNA では不使用。渡しても FM_OK を返して無視する)
+FmEngine_SetMemory(eng, opnaId, FM_MEM_ADPCM_B, adpcmbData, adpcmbSize);
 
 // OPNB / OPNBB: ADPCM-A / ADPCM-B ROM
 FmEngine_SetMemory(eng, opnbId, FM_MEM_ADPCM_A, adpcmaRom, adpcmaSize);
 FmEngine_SetMemory(eng, opnbId, FM_MEM_ADPCM_B, adpcmbRom, adpcmbSize);
 // SetMemory はストリーム開始前 (AddChip 直後) に呼ぶこと
 ```
+
+> **FMEngineTest との互換性**: FMEngineTest が `"OPNA"` に対して
+> `FM_MEM_ADPCM_A` (`ym2608.rom`) を渡す場合、fmgen の OPNA はリズム音源を
+> WAV ファイルから読み込む設計のため、このデータは使用されない。
+> `FM_OK` を返して無視する設計になっており、他チャンネルの動作に影響しない。
 
 ## クロック
 

@@ -66,8 +66,7 @@
 
 // =========================================================
 //  チップ種別列挙
-//  FmEngineApi.h の FmChipType と値を一致させる必要はないが、
-//  FmEngineApi.cpp 側で明示的に変換するため独立した列挙として定義する。
+//  FmGenEngineApi.h では文字列で指定されるが、内部でこの列挙に変換して管理する。
 // =========================================================
 enum class FmGenChipType {
     OPN,    // YM2203
@@ -92,9 +91,7 @@ namespace FmGenClock {
 }
 
 // =========================================================
-//  外部メモリアクセス種別 (FmEngineApi.h の FmMemoryType と対応)
-//  ymfm::access_class と同じ並びにしておくことで FmEngineApi.cpp 側の
-//  変換コードを単純な static_cast にできる。
+//  外部メモリアクセス種別 (FmGenEngineApi.h の FmMemoryType と対応)
 // =========================================================
 enum class FmGenAccessClass {
     IO      = 0,
