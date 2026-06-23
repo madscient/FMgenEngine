@@ -63,6 +63,46 @@
 #include <vector>
 #include <stdexcept>
 #include <algorithm>
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <windows.h>   // GetModuleHandleEx, GetModuleFileName
+#endif
+
+// =========================================================
+//  DLL 自身のディレクトリを返すユーティリティ (Windows 専用)
+//  OPNA リズム WAV の自動ロードに使用する。
+//  戻り値: '\' または '/' で終わるディレクトリパス文字列。
+//          取得に失敗した場合は空文字列 ("") を返し、
+//          fmgen は カレントディレクトリを検索する。
+// =========================================================
+namespace fmgen_detail {
+    inline std::string getDllDir() {
+#ifdef _WIN32
+        HMODULE hm = nullptr;
+        // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS:
+        //   コード中のアドレス (本関数自体) からモジュールハンドルを取得する。
+        //   これにより、どのプロセスからロードされても常に
+        //   FmGenEngineApi.dll 自身のパスが得られる。
+        if (GetModuleHandleExA(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCSTR>(&getDllDir),
+                &hm) && hm) {
+            char buf[MAX_PATH] = {};
+            DWORD len = GetModuleFileNameA(hm, buf, MAX_PATH);
+            if (len > 0 && len < MAX_PATH) {
+                std::string path(buf, len);
+                const auto pos = path.find_last_of("\\/");
+                if (pos != std::string::npos)
+                    return path.substr(0, pos + 1);  // 末尾の区切り文字を含む
+            }
+        }
+#endif
+        return "";  // カレントディレクトリへのフォールバック (fmgen の動作)
+    }
+}
 
 // =========================================================
 //  チップ種別列挙
@@ -246,21 +286,21 @@ inline bool OpnFamilyChip<FM::OPN, FmGenChipType::OPN>::loadRhythmSamplesImpl(
 
 // ---------------------------------------------------------
 //  OPNA: Init(clock, rate, ipflag=false, rhythmpath=nullptr)
-//  リズムサンプル(WAV)は Init 内部で読み込まれる。
-//  rhythmpath が不正/未配置でも Init 自体は (ファイルが1つも無ければ)
-//  続行されるよう、まず target rhythm dir なしで初期化し、後段で
-//  明示的に LoadRhythmSample を呼べるようにする。
-//  ADPCM-B は OPNA 内部に 256KB の RAM バッファを持つため
-//  (LoadRhythmSample とは別物。OPNA::Init が自前で new[] する)、
-//  setMemory(ADPCM_B, ...) はそのバッファへ memcpy する形で対応する。
+//  インスタンス作成時に DLL と同じフォルダの 2608_*.WAV を自動ロードする。
+//  ファイルが存在しない場合はリズムチャンネルが無音になるだけで、
+//  FM/SSG/ADPCM-B チャンネルへの影響はない。
 // ---------------------------------------------------------
 template<>
 inline bool OpnFamilyChip<FM::OPNA, FmGenChipType::OPNA>::initImpl(uint32_t target_rate) {
-    // path=nullptr で初期化: リズムサンプルが見つからなくても
-    // OPNA::LoadRhythmSample は false を返すだけで Init 自体は継続される
-    // (fmgen 実装上 Init の戻り値は adpcmbuf の確保成否に依存し、
-    //  リズムロード成否には依存しない)。
-    return m_chip.Init(m_clock, target_rate, false, nullptr);
+    if (!m_chip.Init(m_clock, target_rate, false, nullptr))
+        return false;
+    // DLL と同じフォルダを基準に 2608_BD.WAV 等を探してロードする。
+    // getDllDir() が空文字列の場合は fmgen のデフォルト動作
+    // (カレントディレクトリを検索) にフォールバックする。
+    const std::string dir = fmgen_detail::getDllDir();
+    m_chip.LoadRhythmSample(dir.empty() ? nullptr : dir.c_str());
+    // LoadRhythmSample の失敗は無視する (ファイル不在は許容)
+    return true;
 }
 template<>
 inline void OpnFamilyChip<FM::OPNA, FmGenChipType::OPNA>::setMemoryImpl(
@@ -285,6 +325,7 @@ inline uint32_t OpnFamilyChip<FM::OPNA, FmGenChipType::OPNA>::memorySizeImpl(
 template<>
 inline bool OpnFamilyChip<FM::OPNA, FmGenChipType::OPNA>::loadRhythmSamplesImpl(
     const char* dir_path) {
+    // 再ロード用。通常は initImpl が自動ロードするため外部から呼ぶ必要はない。
     return m_chip.LoadRhythmSample(dir_path);
 }
 
