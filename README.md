@@ -165,6 +165,19 @@ FmEngine_Generate(eng, out_l, out_r, 512);
 FmEngine_Destroy(eng);
 ```
 
+### OPNA リズム音源
+
+fmgen の OPNA はリズム音源を WAV ファイル
+(`2608_BD.WAV` / `2608_SD.WAV` / `2608_TOP.WAV` / `2608_HH.WAV` /
+`2608_TOM.WAV` / `2608_RIM.WAV`、またはまとめて `2608_RYM.WAV`)
+から読み込む設計になっている。
+
+`FmEngine_AddChip(eng, "OPNA", ...)` を呼んだ時点で、
+**`FmGenEngineApi.dll` と同じフォルダにある WAV ファイルを自動的にロード**する。
+アプリ側での明示的な操作は不要。
+WAV ファイルが存在しない場合はリズムチャンネルが無音になるだけで、
+FM / SSG / ADPCM-B チャンネルの動作には影響しない。
+
 ### ADPCM メモリ設定
 
 ```c
