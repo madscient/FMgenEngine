@@ -1,10 +1,10 @@
-// FmGenEngineApi.cpp
+// FmGenEngine.cpp
 //
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 FmGenEngine contributors
 // (詳細はリポジトリルートの LICENSE / README.md を参照)
 //
-// FmGenEngineApi.h で宣言した C ファサードの実装 (fmgen バックエンド版)。
+// FmGenEngine.h で宣言した C ファサードの実装 (fmgen バックエンド版)。
 // YMEngine (ymfm版) の FmEngineApi.cpp と ABI 完全互換になるよう、
 // 関数シグネチャ・挙動を可能な限り合わせている。
 //
@@ -15,7 +15,7 @@
 // このファイルだけが FmEngine の C++ ヘッダを include する。
 // DLL 境界をまたぐのは POD 型と不透明ポインタだけ。
 
-#include "FmGenEngineApi.h"
+#include "FmGenEngine.h"
 
 #include "FmEngine.h"
 

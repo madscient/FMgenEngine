@@ -5,7 +5,7 @@
 #  cisc 氏による別ライセンス)
 
 cmake_minimum_required(VERSION 3.20)
-project(FmGenEngineApi VERSION 1.0.0 LANGUAGES CXX)
+project(FmGenEngine VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,10 +25,10 @@ if (NOT EXISTS "${FMGEN_DIR}/opna.cpp")
 endif()
 
 # =======================================================
-#  ターゲット: FmGenEngineApi.dll (fmgen バックエンド)
+#  ターゲット: FmGenEngine.dll (fmgen バックエンド)
 # =======================================================
 add_library(FmEngineApi SHARED
-    src/FmGenEngineApi.cpp
+    src/FmGenEngine.cpp
     # fmgen ソース一式 (無改造)
     ${FMGEN_DIR}/fmgen.cpp
     ${FMGEN_DIR}/opna.cpp
@@ -41,9 +41,9 @@ add_library(FmEngineApi SHARED
 )
 
 # CMake 内部ターゲット名は FmEngineApi のままだが、
-# 出力ファイル名は FmGenEngineApi.dll / FmGenEngineApi.lib にする。
+# 出力ファイル名は FmGenEngine.dll / FmGenEngine.lib にする。
 # これにより YMEngine の FmEngineApi.dll と共存・切り替えが可能になる。
-set_target_properties(FmEngineApi PROPERTIES OUTPUT_NAME "FmGenEngineApi")
+set_target_properties(FmEngineApi PROPERTIES OUTPUT_NAME "FmGenEngine")
 
 target_include_directories(FmEngineApi PRIVATE
     src/
@@ -62,13 +62,13 @@ else()
 endif()
 target_compile_options(FmEngineApi PRIVATE ${FMGEN_FORCE_INCLUDE})
 
-# FMENGINE_EXPORTS → FmGenEngineApi.cpp 内で dllexport になる
+# FMENGINE_EXPORTS → FmGenEngine.cpp 内で dllexport になる
 target_compile_definitions(FmEngineApi PRIVATE FMENGINE_EXPORTS)
 
 # .def ファイルでエクスポートシンボルを明示 (MSVC)
 if (MSVC)
     set_target_properties(FmEngineApi PROPERTIES
-        LINK_FLAGS "/DEF:\"${CMAKE_SOURCE_DIR}/src/FmGenEngineApi.def\""
+        LINK_FLAGS "/DEF:\"${CMAKE_SOURCE_DIR}/src/FmGenEngine.def\""
     )
 endif()
 
@@ -79,7 +79,7 @@ endif()
 
 # バージョン情報を DLL に埋め込む (Windows リソース)
 if (MSVC)
-    target_sources(FmEngineApi PRIVATE src/FmGenEngineApi.rc)
+    target_sources(FmEngineApi PRIVATE src/FmGenEngine.rc)
 endif()
 
 # MSVC 最適化・警告設定
@@ -108,4 +108,4 @@ install(TARGETS FmEngineApi
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib          # .lib (import library)
 )
-install(FILES src/FmGenEngineApi.h DESTINATION include)
+install(FILES src/FmGenEngine.h DESTINATION include)
