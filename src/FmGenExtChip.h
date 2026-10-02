@@ -54,9 +54,8 @@ public:
     explicit FmGenPsgChip(uint32_t clock, uint32_t target_rate)
         : m_clock(clock)
     {
-        m_psg.SetClock(static_cast<int>(clock), static_cast<int>(target_rate));
+        m_psg.SetClock(psgClock(), static_cast<int>(target_rate));
         m_psg.Reset();
-        m_native_rate = target_rate;
     }
 
     // PSG はアドレスラッチを持たない直接レジスタ書き込み方式。
@@ -73,32 +72,40 @@ public:
     }
 
     void setTargetRate(uint32_t target_rate) override {
-        m_psg.SetClock(static_cast<int>(m_clock), static_cast<int>(target_rate));
-        m_native_rate = target_rate;
+        m_psg.SetClock(psgClock(), static_cast<int>(target_rate));
     }
 
-    uint32_t          nativeRate() const override { return m_native_rate; }
+    // FM 部を持たないので、トーンのカウンタが進むレートを返す
+    // (トーン周波数 = このレート / (2 × TP) = clock / (32 × TP))。
+    uint32_t          nativeRate() const override { return m_clock / 16; }
     FmGenExtChipType  type()       const override { return FmGenExtChipType::SSG; }
     uint32_t          clock()      const override { return m_clock; }
     const char*       name()       const override { return "SSG (YM2149) [fmgen]"; }
 
 private:
+    // fmgen の PSG は YM2203 の SSG 部として書かれていて、トーン周波数は
+    // SetClock に渡した値 / (8 × TP) になる。AY-3-8910 の式は クロック / (16 × TP)
+    // なので、AY 相当のクロックの半分を渡す約束になっている (OPN 系では fmgen が
+    // 自分で分周して渡す)。単体の YM2149 は SEL を Low (クロック÷2) として扱い、
+    // AY 相当のクロック clock/2 のさらに半分を渡す。clock=3,579,545Hz なら
+    // AY 相当で 1,789,772Hz になる。エンベロープとノイズの周期も同じ値から決まる。
+    int psgClock() const { return static_cast<int>(m_clock / 4); }
+
     PSG                      m_psg;
     uint32_t                  m_clock;
-    uint32_t                  m_native_rate = 0;
     std::vector<PSG::Sample>  m_work;
 };
 
 // =========================================================
 //  ファクトリ関数
+//  既定のクロックは持たない。clock=0 なら std::invalid_argument。
 // =========================================================
 inline std::unique_ptr<FmGenExtChip> createFmGenExtChip(
     FmGenExtChipType type, uint32_t clock, uint32_t target_rate) {
-    auto resolve = [](uint32_t c, uint32_t def) { return c ? c : def; };
+    if (clock == 0) throw std::invalid_argument("fmgen: clock must not be 0");
     switch (type) {
         case FmGenExtChipType::SSG:
-            return std::make_unique<FmGenPsgChip>(
-                resolve(clock, FmGenClock::SSG), target_rate);
+            return std::make_unique<FmGenPsgChip>(clock, target_rate);
     }
     return nullptr;
 }
@@ -116,7 +123,8 @@ public:
     void write(uint32_t port, uint8_t reg, uint8_t value) override {
         m_chip->write(port, reg, value);
     }
-    void generate(float* out_l, float* out_r, uint32_t samples) override {
+    void generate(float* out_l, float* out_r, uint32_t samples,
+                  const PartGains& /*gains*/) override {
         m_chip->generate(out_l, out_r, samples);
     }
     void setTargetRate(uint32_t target_rate) override {

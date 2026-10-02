@@ -155,9 +155,8 @@ void OPN2::SetReg(uint addr, uint data)
             dacen = (data & 0x80) != 0;
         break;
 
-    // プリスケーラ
+    // YM2612 のプリスケーラは 1/6 固定。OPN/OPNA と違い 0x2D-0x2F では切り替わらない
     case 0x2d: case 0x2e: case 0x2f:
-        if (!port1) SetPrescaler((addr & ~0x100u) - 0x2d);
         break;
 
     // F-Number 下位

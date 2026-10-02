@@ -10,10 +10,11 @@
 
 ## 概要
 
-`FmGenEngineApi.h` を一切変更せずに DLL の中身だけを ymfm → fmgen に
-差し替えたもの。YMEngine 向けに書かれたアプリケーションは、リンクする
-DLL を本プロジェクトのもの ( `FmGenEngineApi.dll` ) に差し替えるだけで
-動作する (対応チップの範囲内であれば再コンパイルも不要)。
+YMEngine の `FmEngineApi.h` と同じ関数・列挙値を持つヘッダ (`FmGenEngine.h`) を
+そのまま使い、DLL の中身だけを ymfm → fmgen に差し替えたもの。YMEngine 向けに
+書かれたアプリケーションは、リンクする DLL を本プロジェクトのもの
+( `FmGenEngine.dll` ) に差し替えるだけで動作する (対応チップの範囲内であれば
+再コンパイルも不要)。
 
 波形生成 (`FmEngine_Generate`) とオーディオ出力は分離されており、
 DLL 側には特定のオーディオ API (WASAPI 等) への依存がない。
@@ -22,18 +23,17 @@ DLL 側には特定のオーディオ API (WASAPI 等) への依存がない。
 
 ## 対応チップ
 
-| `FmChipType` / `FmChipTypeExt` | チップ | fmgen クラス | 備考 |
+| チップ名 (`FmEngine_AddChip` の `name`) | チップ | fmgen クラス | 備考 |
 |---|---|---|---|
-| `FM_CHIP_OPN`     | YM2203 (OPN)   | `FM::OPN`    | FM3ch + SSG3ch |
-| `FM_CHIP_OPNA`    | YM2608 (OPNA)  | `FM::OPNA`   | FM6ch + SSG3ch + ADPCM-B + リズム(WAV) |
-| `FM_CHIP_OPNB`    | YM2610 (OPNB)  | `FM::OPNB`   | FM4ch + SSG3ch + ADPCM-A/B |
-| `FM_CHIP_OPNBB`   | YM2610B (OPNBB)| `FM::OPNBB`  | FM6ch + SSG3ch + ADPCM-A/B ★追加実装 |
-| `FM_CHIP_OPN2`    | YM2612 (OPN2)  | `FM::OPN2`   | FM6ch + DACチャンネル ★追加実装 |
-| `FM_CHIP_OPM`     | YM2151 (OPM)   | `FM::OPM`    | FM8ch |
-| `FM_CHIP_EXT_SSG` | YM2149 (SSG)   | `::PSG`      | fmgen 同梱の PSG クラス |
+| `"OPN"`   | YM2203 (OPN)   | `FM::OPN`    | FM3ch + SSG3ch |
+| `"OPNA"`  | YM2608 (OPNA)  | `FM::OPNA`   | FM6ch + SSG3ch + ADPCM-B + リズム(WAV) |
+| `"OPNB"`  | YM2610 (OPNB)  | `FM::OPNB`   | FM4ch + SSG3ch + ADPCM-A/B |
+| `"OPNBB"` | YM2610B (OPNBB)| `FM::OPNBB`  | FM6ch + SSG3ch + ADPCM-A/B ★追加実装 |
+| `"OPN2"`  | YM2612 (OPN2)  | `FM::OPN2`   | FM6ch + DACチャンネル ★追加実装 |
+| `"OPM"`   | YM2151 (OPM)   | `FM::OPM`    | FM8ch |
+| `"SSG"`   | YM2149 (SSG)   | `::PSG`      | fmgen 同梱の PSG クラス |
 
-上記以外は `FmEngine_AddChip` / `FmEngine_AddExtChip` が
-`FM_ERR_INVALID_ARG` を返す。
+上記以外の名前を渡すと `FmEngine_AddChip` は `FM_ERR_UNKNOWN_CHIP` を返す。
 
 ## ファイル構成
 
@@ -46,10 +46,10 @@ FmGenEngine/
     ├── FmGenChip.h         fmgenチップラッパー (OPN/OPNA/OPNB/OPNBB/OPN2/OPM)
     ├── FmGenExtChip.h      fmgen PSG (SSG) ラッパー
     ├── FmEngine.h          複数チップ管理・SPSCキュー・ゲイン
-    ├── FmGenEngineApi.h    DLL公開 C ABI 宣言
-    ├── FmGenEngineApi.cpp  DLL公開 C ABI 実装
-    ├── FmGenEngineApi.def
-    └── FmGenEngineApi.rc
+    ├── FmGenEngine.h       DLL公開 C ABI 宣言
+    ├── FmGenEngine.cpp     DLL公開 C ABI 実装
+    ├── FmGenEngine.def
+    └── FmGenEngine.rc
 ```
 
 ## fmgen ソースについて
@@ -84,6 +84,14 @@ fmgen 0.08 の `OPN2` はヘッダ宣言のみで実装が皆無だった。
   CH1〜3 / CH4〜6 を分離。DAC は `0x2B` bit7=1 で有効化。
   fmgen の `SetPrescaler` との整合のため `SetRate` 内で `clock/2` を
   渡す補正を行っている (YM2612 の内部 FM クロックは `masterClock/144`)。
+  YM2612 のプリスケーラは 1/6 固定なので、`0x2D`〜`0x2F` の書き込みは無視する。
+
+**5. `opna.h` / `opna.cpp` — FM と SSG を別々に出力する `MixSplit` の追加**
+`OPN` / `OPNA` / `OPNB` に、FM 側 (ADPCM・リズムを含む) と SSG を別々の
+バッファに加算する `MixSplit(fm, ssg, nsamples)` を追加した。元の `Mix` の
+本体を `MixSplit` に移し、`Mix` は同じバッファを 2 つ渡して `MixSplit` を
+呼ぶ形にしたので、`Mix` の出力は変わらない。部位ごとのゲイン
+(`FmEngine_SetPartGain`) の実現に使う。
 
 ## ライセンス
 
@@ -92,7 +100,7 @@ fmgen 0.08 の `OPN2` はヘッダ宣言のみで実装が皆無だった。
 | FmGenEngine 独自コード | `src/` | **MIT** ([`LICENSE`](./LICENSE) 参照) |
 | fmgen 本体 + 追加実装 | `extern/fmgen/` | cisc (1998, 2003) 独自ライセンス (MIT非互換) |
 
-`src/` の MIT License は `FmGenEngineApi.h` の元になった YMEngine
+`src/` の MIT License は `FmGenEngine.h` の元になった YMEngine
 (MIT License) から流用・改変した部分も含む。
 
 fmgen のライセンス全文は `extern/fmgen/readme.txt` に同梱
@@ -118,9 +126,8 @@ cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 
 # 成果物
-#   build/bin/FmGenEngineApi.dll
-#   build/bin/FmGenEngineApi.pdb
-#   build/lib/FmGenEngineApi.lib
+#   build/bin/Release/FmGenEngine.dll
+#   build/lib/Release/FmGenEngine.lib   (インポートライブラリ)
 ```
 
 ## DLL の使い方
@@ -129,17 +136,17 @@ cmake --build build --config Release
 
 | | YMEngine (ymfm) | FmGenEngine (fmgen) |
 |---|---|---|
-| DLL | `FmEngineApi.dll` | `FmGenEngineApi.dll` |
-| インポートライブラリ | `FmEngineApi.lib` | `FmGenEngineApi.lib` |
-| ヘッダ | `FmEngineApi.h` | `FmGenEngineApi.h` |
-| 関数名・シグネチャ | 共通 | 共通 |
+| DLL | `YMFMEngine.dll` | `FmGenEngine.dll` |
+| インポートライブラリ | `YMFMEngine.lib` | `FmGenEngine.lib` |
+| ヘッダ | `FmEngineApi.h` | `FmGenEngine.h` |
+| 関数名・シグネチャ・列挙値 | 共通 | 共通 |
 
 チップは文字列で指定する。対応チップ一覧は `FmEngine_Inquiry` /
 `FmEngine_GetSupportedChip` で実行時に取得できる。
 
 ```c
-#include "FmGenEngineApi.h"
-#pragma comment(lib, "FmGenEngineApi.lib")
+#include "FmGenEngine.h"
+#pragma comment(lib, "FmGenEngine.lib")
 
 FmEngineHandle eng = FmEngine_Create(48000);
 
@@ -151,7 +158,7 @@ for (uint32_t i = 0; i < n; ++i)
 
 // チップを文字列で追加
 uint32_t opnaId;
-FmEngine_AddChip(eng, "OPNA", 0, &opnaId);  // clock=0 で標準クロック
+FmEngine_AddChip(eng, "OPNA", 7987200, &opnaId);  // マスタークロック (Hz)。必ず指定する
 FmEngine_SetGain(eng, opnaId, 1.0f, 1.0f);
 
 // レジスタ書き込み (任意スレッドから可)
@@ -173,7 +180,7 @@ fmgen の OPNA はリズム音源を WAV ファイル
 から読み込む設計になっている。
 
 `FmEngine_AddChip(eng, "OPNA", ...)` を呼んだ時点で、
-**`FmGenEngineApi.dll` と同じフォルダにある WAV ファイルを自動的にロード**する。
+**`FmGenEngine.dll` と同じフォルダにある WAV ファイルを自動的にロード**する。
 アプリ側での明示的な操作は不要。
 WAV ファイルが存在しない場合はリズムチャンネルが無音になるだけで、
 FM / SSG / ADPCM-B チャンネルの動作には影響しない。
@@ -191,19 +198,80 @@ FmEngine_SetMemory(eng, opnbId, FM_MEM_ADPCM_B, adpcmbRom, adpcmbSize);
 // SetMemory はストリーム開始前 (AddChip 直後) に呼ぶこと
 ```
 
+- DLL は `data` に書き込まない。OPNA の ADPCM-B は DLL の内部に写すので、
+  チップがメモリに書き込んでも `data` は変わらない。OPNB / OPNBB は `data` を
+  参照するので、`FmEngine_Destroy` が戻るまで解放しないこと。
+- `FM_MEM_ADPCM_B_ROMMODE`、範囲外の種別、`size` が 0、未知の `chip_id` を渡すと
+  `FM_ERR_INVALID_ARG` を返す。チップが持たない種別は `FM_OK` を返して無視する。
+- `FmEngine_SetMemoryEx` (任意のエクスポート) はエクスポートしない。
+- OPNA の ADPCM-B は、ROM/RAM 選択ビットによらず `FM_MEM_ADPCM_B` で渡した
+  データを読む (fmgen が ROM モードを区別しないため)。
+
 > **FMEngineTest との互換性**: FMEngineTest が `"OPNA"` に対して
 > `FM_MEM_ADPCM_A` (`ym2608.rom`) を渡す場合、fmgen の OPNA はリズム音源を
 > WAV ファイルから読み込む設計のため、このデータは使用されない。
 > `FM_OK` を返して無視する設計になっており、他チャンネルの動作に影響しない。
 
+### 部位ごとのゲイン
+
+OPN / OPNA / OPNB / OPNBB は、FM 部と SSG 部を足し合わせて出力する。実機では
+FM と SSG を別々の端子から出してボード上の回路でミックスするため、音量バランスは
+機種によって異なる。`FmEngine_SetPartGain` で部位ごとにゲインを設定できる。
+
+```c
+FmEngine_SetPartGain(eng, opnaId, FM_PART_OPN_SSG, 0.5f, 0.5f);  // SSG を -6 dB
+```
+
+| 部位 | 対象チップ | 内容 | 既定値 |
+|---|---|---|---|
+| `FM_PART_OPN_FM`  | OPN, OPNA, OPNB, OPNBB | FM 部 (ADPCM・リズムを含む) | 1.0 |
+| `FM_PART_OPN_SSG` | OPN, OPNA, OPNB, OPNBB | SSG 部 | 1.0 |
+
+実際に掛かるゲインは、`FmEngine_SetGain` で設定したチップ全体のゲインと部位の
+ゲインの積。既定値 (1.0) では、FM 部と SSG 部を fmgen 本来のバランスで足し合わせる。
+
+OPN2・OPM・SSG は部位を持たないので、`FmEngine_SetGain` を使う。`FmPart` の
+その他の値 (`FM_PART_OPLL_MELODY` など) は YMEngine のチップ用で、本 DLL の
+チップには無い。チップが持たない部位を指定すると `FM_ERR_INVALID_ARG` を返す。
+
+チップが持つ部位は `FmEngine_GetPartMask` で調べられる。bit n が `FmPart` の
+n 番に当たり、部位を持たないチップでは 0。
+
+```c
+uint32_t mask = 0;
+FmEngine_GetPartMask(eng, opnaId, &mask);
+if (mask & (1u << FM_PART_OPN_SSG)) {
+    // SSG のゲインを設定できる
+}
+```
+
+### ネイティブサンプルレート
+
+`FmEngine_GetNativeRate` は FM 部のサンプルレート (Hz、端数切り捨て) を返す。
+OPN / OPNA では prescale レジスタ (port 0 の `0x2D`〜`0x2F`) の書き込みで
+変わる。レジスタ書き込みは `FmEngine_Generate` の中で適用されるので、値が
+変わるのはその後になる。
+
+| チップ | リセット時 / `0x2D` | `0x2E` | `0x2F` |
+|---|---|---|---|
+| OPN         | clock / 72  | clock / 36 | clock / 24 |
+| OPNA        | clock / 144 | clock / 72 | clock / 48 |
+| OPNB, OPNBB, OPN2 | clock / 144 | 変わらない | 変わらない |
+| OPM         | clock / 64  | — | — |
+| SSG         | clock / 16  | — | — |
+
+SSG は FM 部を持たないので、トーンのカウンタが進むレートを返す
+(トーン周波数 = このレート / (2 × TP) = clock / (32 × TP))。
+
+fmgen は出力サンプルレートで直接波形を生成するので、この値は生成には使われない。
+
 ## クロック
 
-| チップ | 標準クロック (`clock=0` 指定時) |
-|---|---|
-| OPN   | 3,993,600 Hz |
-| OPNA  | 7,987,200 Hz |
-| OPNB  | 8,000,000 Hz |
-| OPNBB | 8,000,000 Hz |
-| OPN2  | 7,670,453 Hz |
-| OPM   | 3,579,545 Hz |
-| SSG   | 3,579,545 Hz |
+`FmEngine_AddChip` の `clock` には、チップに入れるマスタークロック (Hz) を必ず
+指定する。DLL は既定のクロックを持たず、0 を渡すと `FM_ERR_INVALID_ARG` を返す。
+同じチップでも機種によってクロックが異なり、F-Number やトーン周期などの
+レジスタ値はクロックを前提に計算するため。
+
+SSG の `clock` は YM2149 のマスタークロックで、SEL 端子を Low (クロック÷2) に
+した扱いになる。トーン周波数は clock / (32 × TP) で、clock = 3,579,545 Hz なら
+1,789,772 Hz の AY-3-8910 と同じ音程になる。

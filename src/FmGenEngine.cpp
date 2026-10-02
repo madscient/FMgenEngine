@@ -25,6 +25,12 @@
 #include <array>
 #include <string_view>
 
+// FmPart は ChipPart にそのままキャストして渡すので、番号を揃えておく。
+// ChipPart に無い FmPart (OPLL/OPL3/OPL4 の部位) は FmEngine が範囲外として拒否する。
+static_assert(FM_PART_OPN_FM  == static_cast<int>(ChipPart::OPN_FM),  "FM_PART_OPN_FM");
+static_assert(FM_PART_OPN_SSG == static_cast<int>(ChipPart::OPN_SSG), "FM_PART_OPN_SSG");
+static_assert(FM_PART_OPN_SSG + 1 == kChipPartCount, "ChipPart has parts FmPart lacks");
+
 // =========================================================
 //  内部構造体 (ハンドルの実体)
 // =========================================================
@@ -119,6 +125,7 @@ FmEngine_AddChip(FmEngineHandle h, const char* name,
                  uint32_t clock, uint32_t* out_id) {
     REQUIRE_PTR(h);
     REQUIRE_PTR(out_id);
+    if (clock == 0) return FM_ERR_INVALID_ARG;  // 既定のクロックは持たない
     const ChipDef* def = findChipDef(name);
     if (!def) return FM_ERR_UNKNOWN_CHIP;
     return safeCall([&] {
@@ -190,30 +197,61 @@ FmEngine_GetGain(FmEngineHandle h, uint32_t chip_id,
     });
 }
 
+FMENGINE_API FmResult FMENGINE_CALL
+FmEngine_SetPartGain(FmEngineHandle h, uint32_t chip_id, FmPart part,
+                     float gain_l, float gain_r) {
+    REQUIRE_PTR(h);
+    const bool ok = static_cast<FmEngineOpaque*>(h)->engine.setPartGain(
+        chip_id, static_cast<ChipPart>(part), gain_l, gain_r);
+    return ok ? FM_OK : FM_ERR_INVALID_ARG;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL
+FmEngine_GetPartGain(FmEngineHandle h, uint32_t chip_id, FmPart part,
+                     float* out_l, float* out_r) {
+    REQUIRE_PTR(h);
+    REQUIRE_PTR(out_l);
+    REQUIRE_PTR(out_r);
+    const bool ok = static_cast<FmEngineOpaque*>(h)->engine.getPartGain(
+        chip_id, static_cast<ChipPart>(part), *out_l, *out_r);
+    return ok ? FM_OK : FM_ERR_INVALID_ARG;
+}
+
+FMENGINE_API FmResult FMENGINE_CALL
+FmEngine_GetPartMask(FmEngineHandle h, uint32_t chip_id, uint32_t* out_mask) {
+    REQUIRE_PTR(h);
+    REQUIRE_PTR(out_mask);
+    const bool ok = static_cast<FmEngineOpaque*>(h)->engine.getPartMask(chip_id, *out_mask);
+    return ok ? FM_OK : FM_ERR_INVALID_ARG;
+}
+
 // =========================================================
 //  外部メモリ設定
-//  OPNA の場合、FM_MEM_ADPCM_A は内部的にリズム WAV ファイルの
-//  代わりとして扱わず、fmgen の OPNA ADPCM-B RAM へ配置する。
-//  (fmgen の OPNA リズム音源は WAV ファイル経由だが、
-//   FMEngineTest は ADPCM_A ROM 経由でのみROMを渡すため、
-//   fmgen 側では ADPCM_B として吸収する。音源動作には影響しない)
+//  OPNA の FM_MEM_ADPCM_A (リズムの内蔵 ROM の内容) は使わない。fmgen の OPNA は
+//  リズムを WAV ファイルから読むため。FM_OK を返して無視する。
+//  受け付けない種別・size 0・未知の chip_id は YMEngine と同じく拒否する。
+//  エンジンは data に書き込まない。OPNA は fmgen 内部のバッファに写し、
+//  OPNB/OPNBB は参照する (fmgen の OPNB にはメモリへ書き込む経路が無い)。
 // =========================================================
 FMENGINE_API FmResult FMENGINE_CALL
 FmEngine_SetMemory(FmEngineHandle h, uint32_t chip_id,
                    FmMemoryType mem_type, const uint8_t* data, uint32_t size) {
     REQUIRE_PTR(h);
     REQUIRE_PTR(data);
-    return safeCall([&] {
-        // FmMemoryType → FmGenAccessClass 変換
-        FmGenAccessClass ac;
-        switch (mem_type) {
-            case FM_MEM_ADPCM_A: ac = FmGenAccessClass::ADPCM_A; break;
-            case FM_MEM_ADPCM_B: ac = FmGenAccessClass::ADPCM_B; break;
-            case FM_MEM_PCM:     ac = FmGenAccessClass::PCM;     break;
-            default:             ac = FmGenAccessClass::IO;      break;
-        }
-        static_cast<FmEngineOpaque*>(h)->engine.setMemory(chip_id, ac, data, size);
+    if (size == 0) return FM_ERR_INVALID_ARG;
+    FmGenAccessClass ac;
+    switch (mem_type) {
+        case FM_MEM_ADPCM_A: ac = FmGenAccessClass::ADPCM_A; break;
+        case FM_MEM_ADPCM_B: ac = FmGenAccessClass::ADPCM_B; break;
+        case FM_MEM_PCM:     ac = FmGenAccessClass::PCM;     break;
+        default:             return FM_ERR_INVALID_ARG;  // FM_MEM_ADPCM_B_ROMMODE は SetMemoryEx 専用
+    }
+    bool ok = false;
+    const FmResult r = safeCall([&] {
+        ok = static_cast<FmEngineOpaque*>(h)->engine.setMemory(chip_id, ac, data, size);
     });
+    if (r != FM_OK) return r;
+    return ok ? FM_OK : FM_ERR_INVALID_ARG;
 }
 
 FMENGINE_API uint32_t FMENGINE_CALL

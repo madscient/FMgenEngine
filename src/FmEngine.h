@@ -11,7 +11,7 @@
 // オーディオコールバック向けのサンプル生成 API を提供する。
 //
 // YMEngine (ymfm版) src/FmEngine.h と同名・同シグネチャのクラスとして
-// 実装することで、FmEngineApi.cpp の構造をそのまま踏襲できるようにしている。
+// 実装することで、YMEngine の FmEngineApi.cpp の構造をそのまま踏襲できるようにしている。
 // 中身が保持するチップは ymfm 製ではなく fmgen 製 (FmGenChip/FmGenExtChip)。
 //
 // MSVC 対応:
@@ -90,14 +90,14 @@ public:
     explicit FmEngine(uint32_t sample_rate = 44100)
         : m_sample_rate(sample_rate) {}
 
-    // fmgen チップ追加。clock=0 で標準クロックを使用。
-    uint32_t addChip(FmGenChipType type, uint32_t clock = 0) {
+    // fmgen チップ追加。既定のクロックは持たない (clock=0 は std::invalid_argument)。
+    uint32_t addChip(FmGenChipType type, uint32_t clock) {
         auto chip = createFmGenChip(type, clock, m_sample_rate);
         return registerChip(std::move(chip));
     }
 
     // 外部ライブラリ扱いのチップ追加 (SSG = fmgen::PSG)
-    uint32_t addExtChip(FmGenExtChipType type, uint32_t clock = 0) {
+    uint32_t addExtChip(FmGenExtChipType type, uint32_t clock) {
         auto ext  = createFmGenExtChip(type, clock, m_sample_rate);
         auto chip = std::make_unique<FmGenExtChipAdapter>(std::move(ext));
         return registerChip(std::move(chip));
@@ -123,15 +123,48 @@ public:
         return m_gains[chip_id]->gain_r.load(std::memory_order_relaxed);
     }
 
+    // 部位ごとのゲイン (任意スレッドから呼べる)。実際に掛かるのは
+    // setGain() のゲイン × 部位のゲイン。既定値は 1.0。
+    // 未知の chip_id、範囲外の part、チップが持たない部位なら false。
+    bool setPartGain(uint32_t chip_id, ChipPart part, float gain_l, float gain_r) {
+        if (!hasPart(chip_id, part)) return false;
+        ChipGain& g = (*m_part_gains[chip_id])[static_cast<size_t>(part)];
+        g.gain_l.store(gain_l, std::memory_order_relaxed);
+        g.gain_r.store(gain_r, std::memory_order_relaxed);
+        return true;
+    }
+
+    bool getPartGain(uint32_t chip_id, ChipPart part, float& out_l, float& out_r) const {
+        if (!hasPart(chip_id, part)) return false;
+        const ChipGain& g = (*m_part_gains[chip_id])[static_cast<size_t>(part)];
+        out_l = g.gain_l.load(std::memory_order_relaxed);
+        out_r = g.gain_r.load(std::memory_order_relaxed);
+        return true;
+    }
+
+    // チップが持つ部位のビットマスク (bit n = ChipPart の n 番)。
+    // 部位を持たないチップは 0。未知の chip_id なら false。
+    bool getPartMask(uint32_t chip_id, uint32_t& out_mask) const {
+        static_assert(kChipPartCount <= 32, "part mask is uint32_t");
+        if (chip_id >= m_chips.size()) return false;
+        uint32_t mask = 0;
+        for (uint32_t p = 0; p < kChipPartCount; ++p)
+            if (m_chips[chip_id]->hasPart(static_cast<ChipPart>(p))) mask |= 1u << p;
+        out_mask = mask;
+        return true;
+    }
+
     // 外部メモリ設定 (OPNA: ADPCM-B / OPNB: ADPCM-A, ADPCM-B)
     // chip_id: addChip() で取得した ID
     // data: ROM/RAM データへのポインタ (呼び出し元が寿命を管理すること)
     // size: データサイズ (バイト)
     // ※ オーディオスレッド起動前に呼ぶこと (スレッドセーフではない)
-    void setMemory(uint32_t chip_id, FmGenAccessClass access_type,
+    // 未知の chip_id なら false
+    bool setMemory(uint32_t chip_id, FmGenAccessClass access_type,
                    const uint8_t* data, uint32_t size) {
-        assert(chip_id < m_chips.size());
+        if (chip_id >= m_chips.size()) return false;
         m_chips[chip_id]->setMemory(access_type, data, size);
+        return true;
     }
 
     uint32_t memorySize(uint32_t chip_id, FmGenAccessClass access_type) const {
@@ -172,8 +205,17 @@ public:
             wb.l.resize(samples);
             wb.r.resize(samples);
 
-            m_chips[i]->generate(wb.l.data(), wb.r.data(), samples);
+            PartGains pg;
+            for (uint32_t p = 0; p < kChipPartCount; ++p) {
+                const ChipGain& g = (*m_part_gains[i])[p];
+                pg.l[p] = g.gain_l.load(std::memory_order_relaxed);
+                pg.r[p] = g.gain_r.load(std::memory_order_relaxed);
+            }
+            m_chips[i]->generate(wb.l.data(), wb.r.data(), samples, pg);
 
+            // チップのゲインは部位を混ぜたあとに掛ける。部位のゲインが既定の
+            // 1.0 なら、チップのゲインの値によらず、fmgen の Mix の出力に
+            // チップのゲインを掛けた値とビット単位で同じになる。
             const float gl = m_gains[i]->gain_l.load(std::memory_order_relaxed);
             const float gr = m_gains[i]->gain_r.load(std::memory_order_relaxed);
             for (uint32_t s = 0; s < samples; ++s) {
@@ -199,8 +241,15 @@ private:
         const uint32_t id = static_cast<uint32_t>(m_chips.size());
         m_chips.push_back(std::move(chip));
         m_gains.push_back(std::make_unique<ChipGain>());
+        m_part_gains.push_back(std::make_unique<PartGainSet>());
         m_work_bufs.emplace_back();
         return id;
+    }
+
+    bool hasPart(uint32_t chip_id, ChipPart part) const {
+        return chip_id < m_chips.size()
+            && static_cast<uint32_t>(part) < kChipPartCount
+            && m_chips[chip_id]->hasPart(part);
     }
 
     static float softClip(float x) {
@@ -214,9 +263,12 @@ private:
         std::vector<float> r;
     };
 
+    using PartGainSet = std::array<ChipGain, kChipPartCount>;
+
     uint32_t                                m_sample_rate;
     std::vector<std::unique_ptr<FmGenChip>>     m_chips;
     std::vector<std::unique_ptr<ChipGain>>      m_gains;   // unique_ptr: atomic は vector 再確保でムーブ不可
+    std::vector<std::unique_ptr<PartGainSet>>   m_part_gains;
     std::vector<WorkBuf>                        m_work_bufs;
     SpscQueue<RegWriteCmd, 4096>                m_queue;
 };

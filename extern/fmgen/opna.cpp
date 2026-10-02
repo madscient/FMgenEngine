@@ -328,12 +328,19 @@ void OPN::SetChannelMask(uint mask)
 
 
 //	合成(2ch)
+//	[FmGenEngine] 本体を MixSplit に移した。
 void OPN::Mix(Sample* buffer, int nsamples)
 {
+	MixSplit(buffer, buffer, nsamples);
+}
+
+//	[FmGenEngine] 追加。元の Mix の本体で、加算先を FM と SSG で分けた。
+void OPN::MixSplit(Sample* fm, Sample* ssg, int nsamples)
+{
 #define IStoSample(s)	((Limit(s, 0x7fff, -0x8000) * fmvolume) >> 14)
-	
-	psg.Mix(buffer, nsamples);
-	
+
+	psg.Mix(ssg, nsamples);
+
 	// Set F-Number
 	ch[0].SetFNum(fnum[0]);
 	ch[1].SetFNum(fnum[1]);
@@ -350,8 +357,8 @@ void OPN::Mix(Sample* buffer, int nsamples)
 	int actch = (((ch[2].Prepare() << 2) | ch[1].Prepare()) << 2) | ch[0].Prepare();
 	if (actch & 0x15)
 	{
-		Sample* limit = buffer + nsamples * 2;
-		for (Sample* dest = buffer; dest < limit; dest+=2)
+		Sample* limit = fm + nsamples * 2;
+		for (Sample* dest = fm; dest < limit; dest+=2)
 		{
 			ISample s = 0;
 			if (actch & 0x01) s  = ch[0].Calc();
@@ -1472,12 +1479,19 @@ void OPNA::SetVolumeADPCM(int db)
 //	in:		buffer		合成先
 //			nsamples	合成サンプル数
 //
+//	[FmGenEngine] 本体を MixSplit に移した。
 void OPNA::Mix(Sample* buffer, int nsamples)
 {
-	FMMix(buffer, nsamples);
-	psg.Mix(buffer, nsamples);
-	ADPCMBMix(buffer, nsamples);
-	RhythmMix(buffer, nsamples);
+	MixSplit(buffer, buffer, nsamples);
+}
+
+//	[FmGenEngine] 追加。元の Mix の本体で、加算先を FM 側と SSG で分けた。
+void OPNA::MixSplit(Sample* fm, Sample* ssg, int nsamples)
+{
+	FMMix(fm, nsamples);
+	psg.Mix(ssg, nsamples);
+	ADPCMBMix(fm, nsamples);
+	RhythmMix(fm, nsamples);
 }
 
 #endif // BUILD_OPNA
@@ -1867,12 +1881,19 @@ void OPNB::SetVolumeADPCMB(int db)
 //	in:		buffer		合成先
 //			nsamples	合成サンプル数
 //
+//	[FmGenEngine] 本体を MixSplit に移した。
 void OPNB::Mix(Sample* buffer, int nsamples)
 {
-	FMMix(buffer, nsamples);
-	psg.Mix(buffer, nsamples);
-	ADPCMBMix(buffer, nsamples);
-	ADPCMAMix(buffer, nsamples);
+	MixSplit(buffer, buffer, nsamples);
+}
+
+//	[FmGenEngine] 追加。元の Mix の本体で、加算先を FM 側と SSG で分けた。
+void OPNB::MixSplit(Sample* fm, Sample* ssg, int nsamples)
+{
+	FMMix(fm, nsamples);
+	psg.Mix(ssg, nsamples);
+	ADPCMBMix(fm, nsamples);
+	ADPCMAMix(fm, nsamples);
 }
 
 #endif // BUILD_OPNB

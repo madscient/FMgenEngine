@@ -232,13 +232,16 @@ namespace FM
 		
 		void	Reset();
 		void 	Mix(Sample* buffer, int nsamples);
+		// [FmGenEngine] 追加。FM を fm に、SSG を ssg に加算する。
+		// Mix は fm と ssg に同じバッファを渡してこれを呼ぶ。
+		void 	MixSplit(Sample* fm, Sample* ssg, int nsamples);
 		void 	SetReg(uint addr, uint data);
 		uint	GetReg(uint addr);
 		uint	ReadStatus() { return status & 0x03; }
 		uint	ReadStatusEx() { return 0xff; }
-		
+
 		void	SetChannelMask(uint mask);
-		
+
 		int		dbgGetOpOut(int c, int s) { return ch[c].op[s].dbgopout_; }
 		int		dbgGetPGOut(int c, int s) { return ch[c].op[s].dbgpgout_; }
 		Channel4* dbgGetCh(int c) { return &ch[c]; }
@@ -268,6 +271,9 @@ namespace FM
 	
 		bool	SetRate(uint c, uint r, bool = false);
 		void 	Mix(Sample* buffer, int nsamples);
+		// [FmGenEngine] 追加。FM・ADPCM・リズムを fm に、SSG を ssg に加算する。
+		// Mix は fm と ssg に同じバッファを渡してこれを呼ぶ。
+		void 	MixSplit(Sample* fm, Sample* ssg, int nsamples);
 
 		void	Reset();
 		void 	SetReg(uint addr, uint data);
@@ -319,6 +325,9 @@ namespace FM
 	
 		bool	SetRate(uint c, uint r, bool = false);
 		void 	Mix(Sample* buffer, int nsamples);
+		// [FmGenEngine] 追加。FM・ADPCM-A/B を fm に、SSG を ssg に加算する。
+		// Mix は fm と ssg に同じバッファを渡してこれを呼ぶ。
+		void 	MixSplit(Sample* fm, Sample* ssg, int nsamples);
 
 		void	Reset();
 		void 	SetReg(uint addr, uint data);

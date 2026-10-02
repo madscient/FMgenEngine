@@ -1,4 +1,4 @@
-// FmGenEngineApi.rc
+// FmGenEngine.rc
 //
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 FmGenEngine contributors
@@ -28,11 +28,11 @@ BEGIN
         BEGIN
             VALUE "FileDescription",  "fmgen FM Sound Engine DLL (YMEngine API compatible)"
             VALUE "FileVersion",      "1.0.0.0"
-            VALUE "ProductName",      "FmGenEngineApi"
+            VALUE "ProductName",      "FmGenEngine"
             VALUE "ProductVersion",   "1.0.0.0"
             VALUE "LegalCopyright",   "Wrapper/engine code: MIT License, (C) 2026 FmGenEngine contributors. fmgen core: (C) cisc 1998-2003, see LICENSE."
-            VALUE "InternalName",     "FmGenEngineApi"
-            VALUE "OriginalFilename", "FmGenEngineApi.dll"
+            VALUE "InternalName",     "FmGenEngine"
+            VALUE "OriginalFilename", "FmGenEngine.dll"
         END
     END
     BLOCK "VarFileInfo"

@@ -1,4 +1,4 @@
-; FmGenEngineApi.def
+; FmGenEngine.def
 ;
 ; SPDX-License-Identifier: MIT
 ; Copyright (c) 2026 FmGenEngine contributors
@@ -6,8 +6,10 @@
 ;  詳細はリポジトリルートの LICENSE / README.md を参照)
 ;
 ; MSVC リンカ用のエクスポート定義ファイル。
+; LIBRARY はインポートライブラリが参照する DLL 名になる。
+; CMakeLists.txt の FMGEN_OUTPUT_NAME と違うと configure で止まる。
 
-LIBRARY "FmGenEngineApi"
+LIBRARY "FmGenEngine"
 
 EXPORTS
     FmEngine_Create
@@ -21,6 +23,9 @@ EXPORTS
     FmEngine_Write
     FmEngine_SetGain
     FmEngine_GetGain
+    FmEngine_SetPartGain
+    FmEngine_GetPartGain
+    FmEngine_GetPartMask
     FmEngine_SetMemory
     FmEngine_GetMemorySize
     FmEngine_Generate

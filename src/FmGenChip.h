@@ -8,8 +8,8 @@
 //  詳細はリポジトリルートの LICENSE / README.md を参照)
 //
 // fmgen (cisc, 1998-2003) のラッパー。
-// YMEngine (ymfm版) の FmChip 抽象インターフェースと完全互換のシグネチャを
-// 提供し、上位層 (FmEngine.h / FmEngineApi.cpp) をそのまま流用できるようにする。
+// YMEngine (ymfm版) の FmChip 抽象インターフェースに合わせ、上位層
+// (FmEngine.h / FmGenEngine.cpp) を YMEngine と同じ構造で書けるようにする。
 //
 // 対応チップ:
 //   OPN   (YM2203) ... FM::OPN
@@ -31,6 +31,8 @@
 //   外付け LinearResampler は不要。ただし OPNA::SetRate はサンプリングレート
 //   変更時にリズムサンプルの step を再計算するだけで FM 部分は
 //   RebuildTimeTable() で追従する。
+//   nativeRate() は実機の FM 部のレートを API 仕様のために返すだけで、
+//   生成には使わない。
 //
 // ポート (OPNA/OPNB のレジスタ拡張面):
 //   fmgen は SetReg(addr, data) のアドレス空間上で port1 を addr+0x100 として
@@ -56,6 +58,7 @@
 #include "fmgen/opm.h"
 #include "fmgen/psg.h"
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -84,7 +87,7 @@ namespace fmgen_detail {
         // GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS:
         //   コード中のアドレス (本関数自体) からモジュールハンドルを取得する。
         //   これにより、どのプロセスからロードされても常に
-        //   FmGenEngineApi.dll 自身のパスが得られる。
+        //   FmGenEngine.dll 自身のパスが得られる。
         if (GetModuleHandleExA(
                 GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
                 GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -106,7 +109,7 @@ namespace fmgen_detail {
 
 // =========================================================
 //  チップ種別列挙
-//  FmGenEngineApi.h では文字列で指定されるが、内部でこの列挙に変換して管理する。
+//  FmGenEngine.h では文字列で指定されるが、内部でこの列挙に変換して管理する。
 // =========================================================
 enum class FmGenChipType {
     OPN,    // YM2203
@@ -117,21 +120,9 @@ enum class FmGenChipType {
     OPM,    // YM2151
 };
 
-// =========================================================
-//  標準クロック定数 (実機準拠。YMEngine/FmChip.h の FmClock と同値)
-// =========================================================
-namespace FmGenClock {
-    constexpr uint32_t OPN   = 3'993'600;
-    constexpr uint32_t OPNA  = 7'987'200;
-    constexpr uint32_t OPNB  = 8'000'000;
-    constexpr uint32_t OPNBB = 8'000'000;  // YM2610B (OPNB と同クロック)
-    constexpr uint32_t OPN2  = 7'670'453;  // YM2612 (Mega Drive 標準)
-    constexpr uint32_t OPM   = 3'579'545;
-    constexpr uint32_t SSG   = 3'579'545;
-}
 
 // =========================================================
-//  外部メモリアクセス種別 (FmGenEngineApi.h の FmMemoryType と対応)
+//  外部メモリアクセス種別 (FmGenEngine.h の FmMemoryType と対応)
 // =========================================================
 enum class FmGenAccessClass {
     IO      = 0,
@@ -141,19 +132,86 @@ enum class FmGenAccessClass {
 };
 
 // =========================================================
+//  出力の部位
+//  番号は FmGenEngine.h の FmPart と同じ (FmGenEngine.cpp の static_assert で
+//  照合する)。FmPart のうち、このエンジンのチップが持つ部位だけを置く。
+//  FmPart の残り (OPLL/OPL3/OPL4 の部位) は範囲外として拒否される。
+// =========================================================
+enum class ChipPart : uint32_t {
+    OPN_FM  = 0,  // OPN/OPNA/OPNB/OPNBB: FM (ADPCM・リズムを含む)
+    OPN_SSG = 1,  //                      SSG
+};
+constexpr uint32_t kChipPartCount = 2;
+
+// 部位ごとのゲイン。チップ全体のゲインは FmEngine が後から掛ける。
+struct PartGains {
+    float l[kChipPartCount];
+    float r[kChipPartCount];
+};
+
+// =========================================================
+//  FM 部のネイティブサンプルレート
+//  レート = クロック / fmDivider()。prescale の番号 p は fmgen の
+//  OPNBase::SetPrescaler と同じく 0x2D→0, 0x2E→1, 0x2F→2。
+//  fmgen は OPNA/OPNB にクロックの半分を渡す (OPNABase::SetRate)。FmGenEngine の
+//  OPN2 も同じく半分を渡すので、分周比は OPN の2倍になる。
+// =========================================================
+namespace fmgen_detail {
+    constexpr uint32_t fmDivider(FmGenChipType type, uint32_t p) {
+        constexpr uint32_t kOpn[3] = { 72, 36, 24 };
+        switch (type) {
+            case FmGenChipType::OPN:   return kOpn[p];
+            case FmGenChipType::OPNA:  return kOpn[p] * 2;
+            case FmGenChipType::OPNB:
+            case FmGenChipType::OPNBB:
+            case FmGenChipType::OPN2:  return kOpn[0] * 2;  // 0x2D-0x2F を無視する (1/6 固定)
+            case FmGenChipType::OPM:   return 64;
+        }
+        return 1;
+    }
+
+    // fmgen が prescale の書き込みを受け付けるのは、OPN/OPNA の port0 だけ。
+    // 書き込みはオーディオスレッドで適用され、rate() は任意スレッドから読まれる。
+    class FmRate {
+    public:
+        FmRate(FmGenChipType type, uint32_t clock)
+            : m_type(type), m_clock(clock), m_rate(clock / fmDivider(type, 0)) {}
+
+        void onWrite(uint32_t port, uint8_t reg) {
+            const bool prescalable = m_type == FmGenChipType::OPN
+                                  || m_type == FmGenChipType::OPNA;
+            if (prescalable && port == 0 && reg >= 0x2d && reg <= 0x2f)
+                m_rate.store(m_clock / fmDivider(m_type, reg - 0x2d),
+                             std::memory_order_relaxed);
+        }
+
+        uint32_t rate() const { return m_rate.load(std::memory_order_relaxed); }
+
+    private:
+        FmGenChipType         m_type;
+        uint32_t              m_clock;
+        std::atomic<uint32_t> m_rate;
+    };
+}
+
+// =========================================================
 //  FmGenChip インターフェース
-//  YMEngine src/FmChip.h の FmChip クラスとシグネチャを完全一致させる。
+//  YMEngine src/FmChip.h の FmChip クラスに合わせている。
 // =========================================================
 class FmGenChip {
 public:
     virtual ~FmGenChip() = default;
     virtual void        write(uint32_t port, uint8_t reg, uint8_t value) = 0;
-    virtual void        generate(float* out_l, float* out_r, uint32_t samples) = 0;
+    // 部位を持たないチップは gains を見ない
+    virtual void        generate(float* out_l, float* out_r, uint32_t samples,
+                                 const PartGains& gains) = 0;
     virtual void        setTargetRate(uint32_t target_rate) = 0;
+    // FM 部のネイティブサンプルレート (Hz、端数切り捨て)
     virtual uint32_t    nativeRate() const = 0;
     virtual FmGenChipType type() const = 0;
     virtual const char* name()  const = 0;
     virtual uint32_t    clock() const = 0;
+    virtual bool        hasPart(ChipPart /*part*/) const { return false; }
 
     // 外部メモリ設定 (OPNA: ADPCM_B のみ / OPNB: ADPCM_A, ADPCM_B)
     // data の寿命は呼び出し元 (FmEngineApi 経由の利用者) が管理する。
@@ -184,6 +242,25 @@ namespace fmgen_detail {
             out_r[i] = static_cast<float>(buf[i * 2 + 1]) * kScale;
         }
     }
+
+    // ゲインが 1.0 なら、FM と SSG を1本のバッファに足してから変換したときと
+    // ビット単位で同じ値になる。2^24 未満の整数に 2 の冪を掛けた値は float で
+    // 正確に表せるので、それぞれの積も、その和も丸められない。
+    inline void mixSplitToFloat(const std::vector<FM::Sample>& fm,
+                                 const std::vector<FM::Sample>& ssg,
+                                 const PartGains& g,
+                                 float* out_l, float* out_r, uint32_t n) {
+        constexpr size_t kFm  = static_cast<size_t>(ChipPart::OPN_FM);
+        constexpr size_t kSsg = static_cast<size_t>(ChipPart::OPN_SSG);
+        const float fm_l  = g.l[kFm]  * kScale, fm_r  = g.r[kFm]  * kScale;
+        const float ssg_l = g.l[kSsg] * kScale, ssg_r = g.r[kSsg] * kScale;
+        for (uint32_t i = 0; i < n; ++i) {
+            out_l[i] = static_cast<float>(fm[i * 2 + 0]) * fm_l
+                     + static_cast<float>(ssg[i * 2 + 0]) * ssg_l;
+            out_r[i] = static_cast<float>(fm[i * 2 + 1]) * fm_r
+                     + static_cast<float>(ssg[i * 2 + 1]) * ssg_r;
+        }
+    }
 }
 
 // =========================================================
@@ -197,29 +274,37 @@ template<typename ChipImpl, FmGenChipType TType>
 class OpnFamilyChip final : public FmGenChip {
 public:
     explicit OpnFamilyChip(uint32_t clock, uint32_t target_rate)
-        : m_clock(clock)
+        : m_clock(clock), m_fm_rate(TType, clock)
     {
         if (!initImpl(target_rate))
             throw std::runtime_error(std::string("fmgen: Init failed for ") + name());
-        m_native_rate = target_rate;
+        m_target_rate = target_rate;
     }
 
     void write(uint32_t port, uint8_t reg, uint8_t value) override {
         const uint32_t addr = (port != 0) ? (static_cast<uint32_t>(reg) + 0x100u)
                                            : static_cast<uint32_t>(reg);
         m_chip.SetReg(addr, value);
+        m_fm_rate.onWrite(port, reg);
     }
 
-    void generate(float* out_l, float* out_r, uint32_t samples) override {
+    void generate(float* out_l, float* out_r, uint32_t samples,
+                  const PartGains& gains) override {
         if (samples == 0) return;
-        m_work.assign(static_cast<size_t>(samples) * 2, 0); // fmgen Mix() は加算合成
-        m_chip.Mix(m_work.data(), static_cast<int>(samples));
-        fmgen_detail::mixBufferToFloat(m_work, out_l, out_r, samples);
+        const size_t n = static_cast<size_t>(samples) * 2;
+        m_work.assign(n, 0);     // fmgen の Mix 系は加算合成
+        m_work_ssg.assign(n, 0);
+        m_chip.MixSplit(m_work.data(), m_work_ssg.data(), static_cast<int>(samples));
+        fmgen_detail::mixSplitToFloat(m_work, m_work_ssg, gains, out_l, out_r, samples);
     }
 
     void setTargetRate(uint32_t target_rate) override {
         m_chip.SetRate(m_clock, target_rate, false);
-        m_native_rate = target_rate;
+        m_target_rate = target_rate;
+    }
+
+    bool hasPart(ChipPart part) const override {
+        return part == ChipPart::OPN_FM || part == ChipPart::OPN_SSG;
     }
 
     void setMemory(FmGenAccessClass access_type,
@@ -235,7 +320,7 @@ public:
         return loadRhythmSamplesImpl(dir_path);
     }
 
-    uint32_t      nativeRate() const override { return m_native_rate; }
+    uint32_t      nativeRate() const override { return m_fm_rate.rate(); }
     FmGenChipType type()       const override { return TType; }
     uint32_t      clock()      const override { return m_clock; }
     const char*   name()       const override;
@@ -249,8 +334,10 @@ private:
 
     ChipImpl              m_chip;
     uint32_t               m_clock;
-    uint32_t               m_native_rate = 0;
-    std::vector<FM::Sample> m_work;
+    uint32_t               m_target_rate = 0;
+    fmgen_detail::FmRate   m_fm_rate;
+    std::vector<FM::Sample> m_work;      // FM (ADPCM・リズムを含む)
+    std::vector<FM::Sample> m_work_ssg;
 
     // OPNB: setMemory で受け取ったポインタ/サイズを保持
     // (fmgen::OPNB::Init は ROM ポインタを直接保持するだけだが、
@@ -354,7 +441,7 @@ inline void OpnFamilyChip<FM::OPNB, FmGenChipType::OPNB>::setMemoryImpl(
     // 既存の発音状態は失われる (内部で Reset() が呼ばれる)。
     // YMEngine の FmEngine_SetMemory と同じ運用制約
     // (ストリーム開始前、AddChip 直後に呼ぶこと) であれば問題にならない。
-    m_chip.Init(m_clock, m_native_rate, false,
+    m_chip.Init(m_clock, m_target_rate, false,
                 const_cast<uint8_t*>(m_adpcmAData), static_cast<int>(m_adpcmASize),
                 const_cast<uint8_t*>(m_adpcmBData), static_cast<int>(m_adpcmBSize));
 }
@@ -402,7 +489,7 @@ inline void OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>::setMemoryImpl(
     } else {
         return;
     }
-    m_chip.Init(m_clock, m_native_rate, false,
+    m_chip.Init(m_clock, m_target_rate, false,
                 const_cast<uint8_t*>(m_adpcmAData), static_cast<int>(m_adpcmASize),
                 const_cast<uint8_t*>(m_adpcmBData), static_cast<int>(m_adpcmBSize));
 }
@@ -433,11 +520,10 @@ using FmGenOpnbbChip = OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>;
 class FmGenOpn2Chip final : public FmGenChip {
 public:
     explicit FmGenOpn2Chip(uint32_t clock, uint32_t target_rate)
-        : m_clock(clock)
+        : m_clock(clock), m_fm_rate(FmGenChipType::OPN2, clock)
     {
         if (!m_chip.Init(m_clock, target_rate))
             throw std::runtime_error("fmgen: OPN2::Init failed");
-        m_native_rate = target_rate;
     }
 
     // OPN2 もポート0/1 で CH1〜3 / CH4〜6 を分離する。
@@ -447,9 +533,11 @@ public:
             ? (static_cast<uint32_t>(reg) + 0x100u)
             : static_cast<uint32_t>(reg);
         m_chip.SetReg(addr, value);
+        m_fm_rate.onWrite(port, reg);
     }
 
-    void generate(float* out_l, float* out_r, uint32_t samples) override {
+    void generate(float* out_l, float* out_r, uint32_t samples,
+                  const PartGains& /*gains*/) override {
         if (samples == 0) return;
         m_work.assign(static_cast<size_t>(samples) * 2, 0);
         m_chip.Mix(m_work.data(), static_cast<int>(samples));
@@ -458,10 +546,9 @@ public:
 
     void setTargetRate(uint32_t target_rate) override {
         m_chip.SetRate(m_clock, target_rate);
-        m_native_rate = target_rate;
     }
 
-    uint32_t      nativeRate() const override { return m_native_rate; }
+    uint32_t      nativeRate() const override { return m_fm_rate.rate(); }
     FmGenChipType type()       const override { return FmGenChipType::OPN2; }
     uint32_t      clock()      const override { return m_clock; }
     const char*   name()       const override { return "OPN2 (YM2612) [fmgen]"; }
@@ -469,7 +556,7 @@ public:
 private:
     FM::OPN2                m_chip;
     uint32_t                 m_clock;
-    uint32_t                 m_native_rate = 0;
+    fmgen_detail::FmRate     m_fm_rate;
     std::vector<FM::Sample>  m_work;
 };
 
@@ -484,14 +571,14 @@ public:
     {
         if (!m_chip.Init(m_clock, target_rate, false))
             throw std::runtime_error("fmgen: OPM::Init failed");
-        m_native_rate = target_rate;
     }
 
     void write(uint32_t /*port*/, uint8_t reg, uint8_t value) override {
         m_chip.SetReg(reg, value);
     }
 
-    void generate(float* out_l, float* out_r, uint32_t samples) override {
+    void generate(float* out_l, float* out_r, uint32_t samples,
+                  const PartGains& /*gains*/) override {
         if (samples == 0) return;
         m_work.assign(static_cast<size_t>(samples) * 2, 0);
         m_chip.Mix(m_work.data(), static_cast<int>(samples));
@@ -500,10 +587,11 @@ public:
 
     void setTargetRate(uint32_t target_rate) override {
         m_chip.SetRate(m_clock, target_rate, false);
-        m_native_rate = target_rate;
     }
 
-    uint32_t      nativeRate() const override { return m_native_rate; }
+    uint32_t      nativeRate() const override {
+        return m_clock / fmgen_detail::fmDivider(FmGenChipType::OPM, 0);
+    }
     FmGenChipType type()       const override { return FmGenChipType::OPM; }
     uint32_t      clock()      const override { return m_clock; }
     const char*   name()       const override { return "OPM (YM2151) [fmgen]"; }
@@ -511,29 +599,23 @@ public:
 private:
     FM::OPM                 m_chip;
     uint32_t                 m_clock;
-    uint32_t                 m_native_rate = 0;
     std::vector<FM::Sample>  m_work;
 };
 
 // =========================================================
 //  ファクトリ関数
+//  既定のクロックは持たない。clock=0 なら std::invalid_argument。
 // =========================================================
 inline std::unique_ptr<FmGenChip> createFmGenChip(
     FmGenChipType type, uint32_t clock, uint32_t target_rate) {
-    auto resolve = [](uint32_t c, uint32_t def) { return c ? c : def; };
+    if (clock == 0) throw std::invalid_argument("fmgen: clock must not be 0");
     switch (type) {
-        case FmGenChipType::OPN:
-            return std::make_unique<FmGenOpnChip>(resolve(clock, FmGenClock::OPN), target_rate);
-        case FmGenChipType::OPNA:
-            return std::make_unique<FmGenOpnaChip>(resolve(clock, FmGenClock::OPNA), target_rate);
-        case FmGenChipType::OPNB:
-            return std::make_unique<FmGenOpnbChip>(resolve(clock, FmGenClock::OPNB), target_rate);
-        case FmGenChipType::OPNBB:
-            return std::make_unique<FmGenOpnbbChip>(resolve(clock, FmGenClock::OPNBB), target_rate);
-        case FmGenChipType::OPN2:
-            return std::make_unique<FmGenOpn2Chip>(resolve(clock, FmGenClock::OPN2), target_rate);
-        case FmGenChipType::OPM:
-            return std::make_unique<FmGenOpmChip>(resolve(clock, FmGenClock::OPM), target_rate);
+        case FmGenChipType::OPN:   return std::make_unique<FmGenOpnChip>(clock, target_rate);
+        case FmGenChipType::OPNA:  return std::make_unique<FmGenOpnaChip>(clock, target_rate);
+        case FmGenChipType::OPNB:  return std::make_unique<FmGenOpnbChip>(clock, target_rate);
+        case FmGenChipType::OPNBB: return std::make_unique<FmGenOpnbbChip>(clock, target_rate);
+        case FmGenChipType::OPN2:  return std::make_unique<FmGenOpn2Chip>(clock, target_rate);
+        case FmGenChipType::OPM:   return std::make_unique<FmGenOpmChip>(clock, target_rate);
     }
     return nullptr;
 }

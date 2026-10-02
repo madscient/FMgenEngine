@@ -42,8 +42,9 @@ add_library(FmEngineApi SHARED
 
 # CMake 内部ターゲット名は FmEngineApi のままだが、
 # 出力ファイル名は FmGenEngine.dll / FmGenEngine.lib にする。
-# これにより YMEngine の FmEngineApi.dll と共存・切り替えが可能になる。
-set_target_properties(FmEngineApi PROPERTIES OUTPUT_NAME "FmGenEngine")
+# これにより YMEngine の YMFMEngine.dll と共存・切り替えが可能になる。
+set(FMGEN_OUTPUT_NAME "FmGenEngine")
+set_target_properties(FmEngineApi PROPERTIES OUTPUT_NAME "${FMGEN_OUTPUT_NAME}")
 
 target_include_directories(FmEngineApi PRIVATE
     src/
@@ -67,6 +68,16 @@ target_compile_definitions(FmEngineApi PRIVATE FMENGINE_EXPORTS)
 
 # .def ファイルでエクスポートシンボルを明示 (MSVC)
 if (MSVC)
+    # .def の LIBRARY はインポートライブラリが参照する DLL 名になる。
+    # OUTPUT_NAME と食い違ってもリンカは警告 (LNK4070) を出すだけで、
+    # 利用側のアプリが実行時に DLL を見つけられなくなるため、ここで止める。
+    file(STRINGS "${CMAKE_SOURCE_DIR}/src/FmGenEngine.def" FMGEN_DEF_LIBRARY
+         REGEX "^LIBRARY ")
+    if (NOT FMGEN_DEF_LIBRARY STREQUAL "LIBRARY \"${FMGEN_OUTPUT_NAME}\"")
+        message(FATAL_ERROR
+            "src/FmGenEngine.def の LIBRARY (${FMGEN_DEF_LIBRARY}) が "
+            "出力名 ${FMGEN_OUTPUT_NAME} と一致しません。")
+    endif()
     set_target_properties(FmEngineApi PROPERTIES
         LINK_FLAGS "/DEF:\"${CMAKE_SOURCE_DIR}/src/FmGenEngine.def\""
     )
