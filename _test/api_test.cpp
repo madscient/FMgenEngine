@@ -27,12 +27,15 @@
 //            [0, size) に置き換えること
 //   play   : OPNA の ADPCM-B が ROM/RAM 選択ビットの側のメモリだけを読むこと (何も
 //            割り当てないときと出力を比べる)。ROM モードは x1/x8 の選択によらず
-//            32 バイト単位・番地順に読むこと (同じバイト列を x1 の RAM モードで鳴らした
-//            出力と一致する)。ブロックを分けても1つのときと同じ出力になること
+//            32 バイト単位・番地順に読むこと。x8 の RAM モードも同じ (どちらも、同じ
+//            バイト列を x1 の RAM モードで鳴らした出力と一致する)。x1 が 32KB で
+//            折り返さないこと。ブロックを分けても1つのときと同じ出力になること
 //   store  : レジスタ経由の転送が RAM のブロックにその場で入り、ROM のブロックには
 //            入らないこと。Write の直後には入っておらず、その後の Generate が戻った
 //            時点で入っていること。ROM モードの転送は ROM モード側のメモリに入ること。
-//            x8 の転送の並び。生成の合間にブロックを書き換えると出力が変わること
+//            x8 の転送の並び。x1 の転送が 32KB で折り返さないこと。control2 を書く前は
+//            リセット状態 (x1) であること。
+//            生成の合間にブロックを書き換えると出力が変わること
 //   unmapped: 何も割り当てない OPNA でレジスタ経由で転送しても鳴らないこと。OPNB/OPNBB
 //            がブロックの後ろや割り当ての無い番地で 0 を読み、落ちないこと
 //
@@ -460,7 +463,7 @@ static void testDefault() {
     const Memory ma = adpcmMemory("OPNA");
     defaultOne<FM::OPNA>(FmGenChipType::OPNA, "OPNA", clockOf("OPNA"),
                          fmSine(0, 4, 0x26A) + ssg + opnaAdpcmB(), ma, initOpna);
-    // x8 の転送と再生。メモリの並びは fmgen の adpcmbuf と同じ (8 面へのビットの振り分け)
+    // x8 の転送と再生
     defaultOne<FM::OPNA>(FmGenChipType::OPNA, "OPNA x8", clockOf("OPNA"),
                          fmSine(0, 4, 0x26A) + ssg + opnaTransfer(0x02, 0x10, noiseBytes(0x800, 9))
                          + opnaAdpcmB(0xC2, 0x08, 0x5F), ma, initOpna);
@@ -755,21 +758,36 @@ static void testPlay() {
               "play: OPNA %s reads only %s", m.what, m.rom ? "FM_MEM_ADPCM_B_ROMMODE" : "FM_MEM_ADPCM_B");
     }
 
-    // ROM モードは x1/x8 の選択によらず 32 バイト単位・番地順。同じバイト列を x1 の
-    // RAM モード (4 バイト単位・番地順) で鳴らした出力と一致する。データの前は
-    // 割り当てないので、番地の単位を取り違えると 0 を読んで食い違う
+    // x8 と ROM モードは 32 バイト単位・番地順 (ROM モードは x1/x8 の選択によらない)。
+    // 同じバイト列を x1 の RAM モード (4 バイト単位・番地順) で鳴らした出力と一致する。
+    // データの前は割り当てないので、番地の単位や並びを取り違えると食い違う
     {
         const uint32_t s = 3, e = s + 0x0F;
         std::vector<uint8_t> d = noiseBytes((e + 1 - s) * 32, 13);
         const auto ref = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, s * 32, &d, FM_ACCESS_ROM } }),
                                     opnaAdpcmB(0xC0, s * 8, (e + 1) * 8 - 1), n);
-        bool ok = countNonZero(ref, 0) > n / 8;
+        bool x8 = countNonZero(ref, 0) > n / 8;
+        x8 &= sameBits(ref, renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, s * 32, &d, FM_ACCESS_ROM } }),
+                                       opnaAdpcmB(0xC2, s, e), n));
+        check(x8, "play: OPNA RAM x8 reads bytes in address order in 32-byte units");
+        bool rom = true;
         for (uint8_t c2 : { uint8_t{0xC1}, uint8_t{0xC3} }) {
-            const auto rom = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B_ROMMODE, s * 32, &d, FM_ACCESS_ROM } }),
-                                        opnaAdpcmB(c2, s, e), n);
-            ok &= sameBits(rom, ref);
+            rom &= sameBits(ref, renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B_ROMMODE, s * 32, &d, FM_ACCESS_ROM } }),
+                                            opnaAdpcmB(c2, s, e), n));
         }
-        check(ok, "play: OPNA ROM mode reads bytes in address order in 32-byte units");
+        check(rom, "play: OPNA ROM mode reads bytes in address order in 32-byte units");
+    }
+
+    // x1 の再生は 32KB (D-RAM 1 個ぶん) の境目をまたいでも折り返さない。境目の前後の
+    // バイトを並べたブロックを先頭から鳴らしたときと一致する
+    {
+        std::vector<uint8_t> w = noiseBytes(0x40000, 29);
+        std::vector<uint8_t> joined = slice(w, 0x7FE0, 0x8020);
+        const auto across = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, 0, &w, FM_ACCESS_ROM } }),
+                                       opnaAdpcmB(0xC0, (0x8000 - 0x20) / 4, 0x8000 / 4 + 0x20 / 4 - 1), n);
+        const auto ref = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, 0, &joined, FM_ACCESS_ROM } }),
+                                    opnaAdpcmB(0xC0, 0, 0x40 / 4 - 1), n);
+        check(countNonZero(ref, 0) > 0 && sameBits(across, ref), "play: OPNA x1 crosses 32KB without wrapping");
     }
 
     // ブロックを分けて割り当てても、1つのときと同じ。分け目は再生する範囲の中に置く
@@ -857,8 +875,7 @@ static void testStore() {
         FmEngine_Destroy(e);
     }
 
-    // x8 の転送は、32KB の面 8 つにビットを振り分けて入る (fmgen の並び)。
-    // 番地 L のバイトのビット p は、面 p の (L >> 3) 番目のバイトのビット (L & 7)
+    // x8 の転送は 32 バイト単位・番地順に入る
     {
         std::vector<uint8_t> ram(0x40000, 0), rom(0x40000, 0);
         uint32_t id = 0;
@@ -866,12 +883,39 @@ static void testStore() {
         writeAll(e, id, opnaTransfer(0x02, s, pattern));
         generate(e, 16);
         std::vector<uint8_t> expect(ram.size(), 0);
-        for (uint32_t k = 0; k < pattern.size(); ++k) {
-            const uint32_t addr = s * 32 + k;
-            for (uint32_t p = 0; p < 8; ++p)
-                if (pattern[k] & (1u << p)) expect[p * 0x8000 + (addr >> 3)] |= 1u << (addr & 7);
-        }
-        check(ram == expect && allZero(rom), "store: OPNA x8 transfer spreads bits over eight 32KB planes");
+        std::copy(pattern.begin(), pattern.end(), expect.begin() + s * 32);
+        check(ram == expect && allZero(rom), "store: OPNA x8 transfer goes in address order in 32-byte units");
+        FmEngine_Destroy(e);
+    }
+
+    // x1 は D-RAM (256K x 1 ビット) を BANK で切り替えて最大 8 個を順に使うので、
+    // 1 個ぶんの 32KB の境目をまたいでも折り返さない
+    {
+        const uint32_t start = (0x8000 - 0x20) / 4;  // 32KB の 0x20 バイト手前
+        std::vector<uint8_t> ram(0x40000, 0), rom(0x40000, 0);
+        uint32_t id = 0;
+        FmEngineHandle e = opnaWithMemory(id, ram, FM_ACCESS_RAM, rom, FM_ACCESS_RAM);
+        writeAll(e, id, opnaTransfer(0x00, start, pattern));
+        generate(e, 16);
+        std::vector<uint8_t> expect(ram.size(), 0);
+        std::copy(pattern.begin(), pattern.end(), expect.begin() + 0x7FE0);
+        check(ram == expect && allZero(rom), "store: OPNA x1 transfer crosses 32KB without wrapping");
+        FmEngine_Destroy(e);
+    }
+
+    // control2 (port1 の 0x01) を一度も書かなければ、リセット状態 (x1 の RAM モード)
+    {
+        std::vector<uint8_t> ram(0x40000, 0), rom(0x40000, 0);
+        uint32_t id = 0;
+        FmEngineHandle e = opnaWithMemory(id, ram, FM_ACCESS_RAM, rom, FM_ACCESS_RAM);
+        Writes w = opnaTransfer(0x00, s, pattern);
+        w.erase(std::remove_if(w.begin(), w.end(), [](const W& x) { return x.port == 1 && x.reg == 0x01; }),
+                w.end());
+        writeAll(e, id, w);
+        generate(e, 16);
+        std::vector<uint8_t> expect(ram.size(), 0);
+        std::copy(pattern.begin(), pattern.end(), expect.begin() + s * 4);
+        check(ram == expect && allZero(rom), "store: OPNA transfer before any control2 write is x1 (reset state)");
         FmEngine_Destroy(e);
     }
 

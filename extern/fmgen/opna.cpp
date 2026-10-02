@@ -19,11 +19,9 @@
 
 
 // ---------------------------------------------------------------------------
-//	OPNA: ADPCM データの格納方式の違い (8bit/1bit) をエミュレートしない
-//	このオプションを有効にすると ADPCM メモリへのアクセス(特に 8bit モード)が
-//	多少軽くなるかも
-//
-//#define NO_BITTYPE_EMULATION
+//	[FmGenEngine] この位置にあった NO_BITTYPE_EMULATION (ADPCM データの格納方式の
+//	違い (8bit/1bit) をエミュレートしない) の切り替えを削除し、常にエミュレート
+//	しない側にした。WriteRAM の注記を参照。
 
 #ifdef BUILD_OPNA
 #include "file.h"
@@ -396,6 +394,7 @@ OPNABase::OPNABase()
 
 	adpcmvol = 0;
 	control2 = 0;
+	granuality = 4;	// [FmGenEngine] 追加。control2 = 0 (x1) に合わせる
 
 	MakeTable2();
 	BuildLFOTable();
@@ -636,7 +635,7 @@ void OPNABase::SetADPCMBReg(uint addr, uint data)
 
 	case 0x01:		// Control Register 2
 		control2 = data;
-		// [FmGenEngine] ROM モード (bit0) も x8 と同じ刻みにした (WriteRAM の注記を参照)
+		// [FmGenEngine] ROM モード (bit0) も x8 と同じにした (WriteRAM の注記を参照)
 		granuality = control2 & 3 ? 1 : 4;
 		break;
 
@@ -781,41 +780,20 @@ inline void OPNABase::WriteADPCMBMem(uint addr, uint8 data)
 //	ADPCM RAM への書込み操作
 //
 //	[FmGenEngine] メモリには ReadADPCMBMem / WriteADPCMBMem を通して触るように
-//	した。ROM モード (control2 の bit0) の分岐を足した (ReadRAM / ReadRAMN も同じ)。
-//	ROM モードは x1/x8 の選択 (bit1) によらず、32 バイト単位で 1 バイトずつ番地順に
-//	アクセスする。ymfm と同じ扱い。YM2608 の実機がそうなっているかは確かめて
-//	いない (Y8950 のマニュアルの ROM の記述からの推測)。
+//	した (ReadRAM / ReadRAMN も同じ)。
+//	x8 (control2 の bit1) を 8 個の 1 ビット幅の D-RAM へのビットの振り分けとして
+//	読み書きする分岐 (NO_BITTYPE_EMULATION が無いときの分岐) を削除し、x8 も
+//	チップが読み書きするバイトを番地順に置くようにした。メモリを、そのモードで
+//	チップが読み書きするバイトの並びとして扱う (D-RAM の中身としては扱わない)。
+//	x1 は 256K x 1 ビットの D-RAM を BANK (番地の上位 3 ビット) で選び、最大 8 個を
+//	1 ビットずつ順に読み書きする。番地は 4 バイト単位、範囲は 256KB。
+//	x8 と ROM モード (bit0、x1/x8 の選択によらない) はバイト単位で読み書きする。
+//	番地は 32 バイト単位、範囲は 256KB。
+//	(YM2608 の資料のスタート/ストップアドレスの記述による)
 void OPNABase::WriteRAM(uint data)
 {
-#ifndef NO_BITTYPE_EMULATION
-	if (control2 & 1)
-	{
-		// ROM mode
-		WriteADPCMBMem((memaddr >> 1) & 0x3ffff, data);
-		memaddr += 2;
-	}
-	else if (!(control2 & 2))
-	{
-		// 1 bit mode
-		WriteADPCMBMem((memaddr >> 4) & 0x3ffff, data);
-		memaddr += 16;
-	}
-	else
-	{
-		// 8 bit mode
-		uint a = (memaddr >> 4) & 0x7fff;
-		uint bank = (memaddr >> 1) & 7;
-		uint8 mask = 1 << bank;
-		data <<= bank;
-
-		for (int i=0; i<8; i++, a+=0x8000, data>>=1)
-			WriteADPCMBMem(a, (ReadADPCMBMem(a) & ~mask) | (uint8(data) & mask));
-		memaddr += 2;
-	}
-#else
 	WriteADPCMBMem((memaddr >> granuality) & 0x3ffff, data);
 	memaddr += 1 << granuality;
-#endif
 
 	if (memaddr == stopaddr)
 	{
@@ -838,41 +816,8 @@ void OPNABase::WriteRAM(uint data)
 uint OPNABase::ReadRAM()
 {
 	uint data;
-#ifndef NO_BITTYPE_EMULATION
-	if (control2 & 1)
-	{
-		// ROM mode
-		data = ReadADPCMBMem((memaddr >> 1) & 0x3ffff);
-		memaddr += 2;
-	}
-	else if (!(control2 & 2))
-	{
-		// 1 bit mode
-		data = ReadADPCMBMem((memaddr >> 4) & 0x3ffff);
-		memaddr += 16;
-	}
-	else
-	{
-		// 8 bit mode
-		uint a = (memaddr >> 4) & 0x7fff;
-		uint bank = (memaddr >> 1) & 7;
-		uint8 mask = 1 << bank;
-
-		data =            (ReadADPCMBMem(a + 0x38000) & mask);
-		data = data * 2 + (ReadADPCMBMem(a + 0x30000) & mask);
-		data = data * 2 + (ReadADPCMBMem(a + 0x28000) & mask);
-		data = data * 2 + (ReadADPCMBMem(a + 0x20000) & mask);
-		data = data * 2 + (ReadADPCMBMem(a + 0x18000) & mask);
-		data = data * 2 + (ReadADPCMBMem(a + 0x10000) & mask);
-		data = data * 2 + (ReadADPCMBMem(a + 0x08000) & mask);
-		data = data * 2 + (ReadADPCMBMem(a + 0x00000) & mask);
-		data >>= bank;
-		memaddr += 2;
-	}
-#else
 	data = ReadADPCMBMem((memaddr >> granuality) & 0x3ffff);
 	memaddr += 1 << granuality;
-#endif
 	if (memaddr == stopaddr)
 	{
 		SetStatus(4);
@@ -917,46 +862,11 @@ int OPNABase::ReadRAMN()
 	uint data;
 	if (granuality > 0)
 	{
-#ifndef NO_BITTYPE_EMULATION
-		if (control2 & 1)
-		{
-			// ROM mode
-			data = ReadADPCMBMem((memaddr >> 1) & 0x3ffff);
-			memaddr ++;
-			if (memaddr & 1)
-				return DecodeADPCMBSample(data >> 4);
-			data &= 0x0f;
-		}
-		else if (!(control2 & 2))
-		{
-			data = ReadADPCMBMem((memaddr >> 4) & 0x3ffff);
-			memaddr += 8;
-			if (memaddr & 8)
-				return DecodeADPCMBSample(data >> 4);
-			data &= 0x0f;
-		}
-		else
-		{
-			uint a = ((memaddr >> 4) & 0x7fff) + ((~memaddr & 1) << 17);
-			uint bank = (memaddr >> 1) & 7;
-			uint8 mask = 1 << bank;
-
-			data =            (ReadADPCMBMem(a + 0x18000) & mask);
-			data = data * 2 + (ReadADPCMBMem(a + 0x10000) & mask);
-			data = data * 2 + (ReadADPCMBMem(a + 0x08000) & mask);
-			data = data * 2 + (ReadADPCMBMem(a + 0x00000) & mask);
-			data >>= bank;
-			memaddr ++;
-			if (memaddr & 1)
-				return DecodeADPCMBSample(data);
-		}
-#else
 		data = ReadADPCMBMem((memaddr >> granuality) & adpcmmask);
 		memaddr += 1 << (granuality-1);
 		if (memaddr & (1 << (granuality-1)))
 			return DecodeADPCMBSample(data >> 4);
 		data &= 0x0f;
-#endif
 	}
 	else
 	{
