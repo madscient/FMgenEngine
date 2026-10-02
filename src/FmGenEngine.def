@@ -28,4 +28,5 @@ EXPORTS
     FmEngine_GetPartMask
     FmEngine_SetMemory
     FmEngine_GetMemorySize
+    FmEngine_SetMemoryEx
     FmEngine_Generate

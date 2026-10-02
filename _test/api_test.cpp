@@ -11,7 +11,9 @@
 //            掛けること。チップのゲインと部位のゲインが掛け算になること
 //   default: 既定のゲインで、ラッパーの出力が fmgen の Mix (FM と SSG を1本の
 //            バッファに足す) を float に直した値と全サンプル一致すること。対照として、
-//            SSG のゲインを 0.5 にすると一致しないことも見る
+//            SSG のゲインを 0.5 にすると一致しないことも見る。ラッパーは ADPCM の
+//            メモリを差し替え口から読み書きし、fmgen 単体は自分のバッファを使うので、
+//            ADPCM を鳴らすケース (OPNA は x1 と、x8 の転送と再生) はその照合も兼ねる
 //   native : GetNativeRate の値 (prescale の書き込みを含む)。その値が fmgen が実際に
 //            使っているレートであることを、FM の音程 (fnum から計算) と SSG の音程
 //            (TP から計算) を測って確かめる
@@ -19,6 +21,20 @@
 //            chip_id を拒否すること。GetMemorySize。エンジンが data に書き込まない
 //            こと (OPNA でチップにメモリを書かせても、渡したバッファは変わらない。
 //            書き込みが実際に起きたことは、再生の音が変わることで確かめる)
+//   memex  : SetMemoryEx が受け付けるチップと種別の組み合わせ。範囲の検査 (size 0、
+//            2^32 越え、重なり、隣接)、未知の access、null での取り外し、
+//            GetMemorySize が大きさの合計を返すこと。SetMemory が割り当てを
+//            [0, size) に置き換えること
+//   play   : OPNA の ADPCM-B が ROM/RAM 選択ビットの側のメモリだけを読むこと (何も
+//            割り当てないときと出力を比べる)。ROM モードは x1/x8 の選択によらず
+//            32 バイト単位・番地順に読むこと (同じバイト列を x1 の RAM モードで鳴らした
+//            出力と一致する)。ブロックを分けても1つのときと同じ出力になること
+//   store  : レジスタ経由の転送が RAM のブロックにその場で入り、ROM のブロックには
+//            入らないこと。Write の直後には入っておらず、その後の Generate が戻った
+//            時点で入っていること。ROM モードの転送は ROM モード側のメモリに入ること。
+//            x8 の転送の並び。生成の合間にブロックを書き換えると出力が変わること
+//   unmapped: 何も割り当てない OPNA でレジスタ経由で転送しても鳴らないこと。OPNB/OPNBB
+//            がブロックの後ろや割り当ての無い番地で 0 を読み、落ちないこと
 //
 // fmgen には未初期化のまま使われるメンバがある (PSG のカウンタなど) ため、確保した
 // メモリを 0 で埋める operator new に差し替えて、インスタンス間で出力を比べられる
@@ -35,6 +51,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <malloc.h>
 #include <new>
 #include <string>
@@ -140,14 +157,32 @@ static Writes ssgTone(int tp) {
     };
 }
 
-static Writes opnaAdpcmB() {
+static uint8_t lo(uint32_t v) { return static_cast<uint8_t>(v & 0xFF); }
+static uint8_t hi(uint32_t v) { return static_cast<uint8_t>((v >> 8) & 0xFF); }
+
+// OPNA の ADPCM-B を、開始番地 start から終了番地 stop まで (レジスタの値) 鳴らす。
+// control2 は port1 の 0x01 に書く値 (bit0: ROM/RAM 選択、bit1: x8、bit7/6: L/R)
+static Writes opnaAdpcmB(uint8_t control2 = 0xC0, uint32_t start = 0, uint32_t stop = 0x01FF) {
     return {
-        { 1, 0x00, 0x01 }, { 1, 0x01, 0xC0 },
-        { 1, 0x02, 0x00 }, { 1, 0x03, 0x00 }, { 1, 0x04, 0xFF }, { 1, 0x05, 0x01 },
+        { 1, 0x00, 0x01 }, { 1, 0x01, control2 },
+        { 1, 0x02, lo(start) }, { 1, 0x03, hi(start) }, { 1, 0x04, lo(stop) }, { 1, 0x05, hi(stop) },
         { 1, 0x0C, 0xFF }, { 1, 0x0D, 0xFF },
         { 1, 0x09, 0x00 }, { 1, 0x0A, 0x50 }, { 1, 0x0B, 0xFF },
         { 1, 0x00, 0xA0 },
     };
+}
+
+// OPNA の ADPCM-B のメモリへ、開始番地 start からチップ経由で bytes を書く (port1 の 0x08)
+static Writes opnaTransfer(uint8_t control2, uint32_t start, const std::vector<uint8_t>& bytes) {
+    Writes w = {
+        { 1, 0x00, 0x01 }, { 1, 0x01, control2 },
+        { 1, 0x02, lo(start) }, { 1, 0x03, hi(start) }, { 1, 0x04, 0xFF }, { 1, 0x05, 0xFF },
+        { 1, 0x0C, 0xFF }, { 1, 0x0D, 0xFF },
+        { 1, 0x00, 0x60 },  // メモリへの書き込み
+    };
+    for (uint8_t b : bytes) w.push_back({ 1, 0x08, b });
+    w.push_back({ 1, 0x00, 0x01 });
+    return w;
 }
 
 static Writes opnbAdpcmA() {
@@ -181,17 +216,16 @@ struct Gains {
     float ssg_l = 1, ssg_r = 1;
 };
 
+// チップを追加した直後、書き込みの前に呼ぶ
+using Setup = std::function<void(FmEngineHandle, uint32_t)>;
+
 // L/R を交互に並べた出力
-static std::vector<float> render(const char* name, const Writes& writes, const Memory& mem,
-                                 const Gains& g, uint32_t samples) {
+static std::vector<float> renderWith(const char* name, const Setup& setup, const Writes& writes,
+                                     uint32_t samples) {
     FmEngineHandle e = FmEngine_Create(kRate);
     uint32_t id = 0;
     FmEngine_AddChip(e, name, clockOf(name), &id);
-    for (const auto& m : mem)
-        FmEngine_SetMemory(e, id, m.first, m.second.data(), static_cast<uint32_t>(m.second.size()));
-    FmEngine_SetGain(e, id, g.chip_l, g.chip_r);
-    FmEngine_SetPartGain(e, id, FM_PART_OPN_FM,  g.fm_l,  g.fm_r);
-    FmEngine_SetPartGain(e, id, FM_PART_OPN_SSG, g.ssg_l, g.ssg_r);
+    if (setup) setup(e, id);
     for (const auto& w : writes) FmEngine_Write(e, id, w.reg, w.val, w.port);
 
     std::vector<float> out;
@@ -204,6 +238,17 @@ static std::vector<float> render(const char* name, const Writes& writes, const M
     }
     FmEngine_Destroy(e);
     return out;
+}
+
+static std::vector<float> render(const char* name, const Writes& writes, const Memory& mem,
+                                 const Gains& g, uint32_t samples) {
+    return renderWith(name, [&](FmEngineHandle e, uint32_t id) {
+        for (const auto& m : mem)
+            FmEngine_SetMemory(e, id, m.first, m.second.data(), static_cast<uint32_t>(m.second.size()));
+        FmEngine_SetGain(e, id, g.chip_l, g.chip_r);
+        FmEngine_SetPartGain(e, id, FM_PART_OPN_FM,  g.fm_l,  g.fm_r);
+        FmEngine_SetPartGain(e, id, FM_PART_OPN_SSG, g.ssg_l, g.ssg_r);
+    }, writes, samples);
 }
 
 static size_t countNonZero(const std::vector<float>& v, int ch) {
@@ -349,9 +394,9 @@ static void defaultOne(FmGenChipType type, const char* name, uint32_t clock,
     auto raw = std::make_unique<Raw>();
     initRaw(*raw, clock, mem);
     for (const auto& m : mem) {
-        const auto ac = m.first == FM_MEM_ADPCM_A ? FmGenAccessClass::ADPCM_A : FmGenAccessClass::ADPCM_B;
-        wrapped->setMemory(ac, m.second.data(), static_cast<uint32_t>(m.second.size()));
-        control->setMemory(ac, m.second.data(), static_cast<uint32_t>(m.second.size()));
+        const auto type = static_cast<ChipMemoryType>(m.first);
+        wrapped->setMemory(type, m.second.data(), static_cast<uint32_t>(m.second.size()));
+        control->setMemory(type, m.second.data(), static_cast<uint32_t>(m.second.size()));
     }
     for (const auto& x : w) {
         wrapped->write(x.port, x.reg, x.val);
@@ -415,6 +460,10 @@ static void testDefault() {
     const Memory ma = adpcmMemory("OPNA");
     defaultOne<FM::OPNA>(FmGenChipType::OPNA, "OPNA", clockOf("OPNA"),
                          fmSine(0, 4, 0x26A) + ssg + opnaAdpcmB(), ma, initOpna);
+    // x8 の転送と再生。メモリの並びは fmgen の adpcmbuf と同じ (8 面へのビットの振り分け)
+    defaultOne<FM::OPNA>(FmGenChipType::OPNA, "OPNA x8", clockOf("OPNA"),
+                         fmSine(0, 4, 0x26A) + ssg + opnaTransfer(0x02, 0x10, noiseBytes(0x800, 9))
+                         + opnaAdpcmB(0xC2, 0x08, 0x5F), ma, initOpna);
     const Memory mb = adpcmMemory("OPNB");
     const Writes wb = fmSine(1, 4, 0x26A) + ssg + opnbAdpcmA() + opnbAdpcmB();
     defaultOne<FM::OPNB>(FmGenChipType::OPNB, "OPNB", clockOf("OPNB"), wb, mb, initOpnb<FM::OPNB>);
@@ -519,19 +568,6 @@ static void testNative() {
 }
 
 // ---- memory ----------------------------------------------------------------
-// OPNA の ADPCM-B のメモリへ、チップ経由で pattern を書く (port1 の 0x08)
-static Writes opnaWriteRam(uint8_t pattern, int bytes) {
-    Writes w = {
-        { 1, 0x00, 0x01 }, { 1, 0x01, 0x00 },
-        { 1, 0x02, 0x00 }, { 1, 0x03, 0x00 }, { 1, 0x04, 0xFF }, { 1, 0x05, 0x01 },
-        { 1, 0x0C, 0xFF }, { 1, 0x0D, 0xFF },
-        { 1, 0x00, 0x60 },  // メモリへの書き込み
-    };
-    for (int i = 0; i < bytes; ++i) w.push_back({ 1, 0x08, pattern });
-    w.push_back({ 1, 0x00, 0x01 });
-    return w;
-}
-
 static void testMemory() {
     const std::vector<uint8_t> buf = noiseBytes(0x1000, 7);
     const uint32_t n = static_cast<uint32_t>(buf.size());
@@ -562,11 +598,12 @@ static void testMemory() {
         ok &= FmEngine_SetMemory(e, opna, FM_MEM_ADPCM_B, buf.data(), n) == FM_OK;
         ok &= FmEngine_GetMemorySize(e, opna, FM_MEM_ADPCM_B) == n;
         ok &= FmEngine_GetMemorySize(e, opna, FM_MEM_ADPCM_B_ROMMODE) == 0;
-        // OPNA のリズムは WAV から読むので ADPCM-A は受け付けて使わない。
-        // チップが持たない種別も受け付けて使わない (YMEngine と同じ)
+        // OPNA のリズムは WAV から読むので ADPCM-A は受け付けて読まない。
+        // チップが持たない種別も受け付けて読まない (YMEngine と同じ)
         ok &= FmEngine_SetMemory(e, opna, FM_MEM_ADPCM_A, buf.data(), n) == FM_OK;
-        ok &= FmEngine_GetMemorySize(e, opna, FM_MEM_ADPCM_A) == 0;
+        ok &= FmEngine_GetMemorySize(e, opna, FM_MEM_ADPCM_A) == n;
         ok &= FmEngine_SetMemory(e, opn, FM_MEM_PCM, buf.data(), n) == FM_OK;
+        ok &= FmEngine_GetMemorySize(e, opn, FM_MEM_PCM) == 0;
         ok &= FmEngine_SetMemory(e, opnb, FM_MEM_ADPCM_A, buf.data(), n) == FM_OK;
         ok &= FmEngine_SetMemory(e, opnb, FM_MEM_ADPCM_B, buf.data(), n / 2) == FM_OK;
         ok &= FmEngine_GetMemorySize(e, opnb, FM_MEM_ADPCM_A) == n;
@@ -579,7 +616,8 @@ static void testMemory() {
     {
         const Memory mem = adpcmMemory("OPNA");
         const std::vector<uint8_t> before = mem[0].second;
-        const auto written = render("OPNA", opnaWriteRam(0x77, 256) + opnaAdpcmB(), mem, Gains{}, 9600);
+        const auto written = render("OPNA", opnaTransfer(0x00, 0, std::vector<uint8_t>(256, 0x77))
+                                            + opnaAdpcmB(), mem, Gains{}, 9600);
         const auto plain   = render("OPNA", opnaAdpcmB(), mem, Gains{}, 9600);
         check(mem[0].second == before && !sameBits(written, plain),
               "memory: OPNA chip writes do not reach the caller's data (and do change playback)");
@@ -603,6 +641,302 @@ static void testMemory() {
     }
 }
 
+// ---- memex -----------------------------------------------------------------
+static void testMemoryEx() {
+    static const char* const kChips[] = { "OPN", "OPNA", "OPNB", "OPNBB", "OPN2", "OPM", "SSG" };
+    // bit n = FmMemoryType の n 番
+    constexpr uint32_t A = 1u << FM_MEM_ADPCM_A, B = 1u << FM_MEM_ADPCM_B;
+    constexpr uint32_t R = 1u << FM_MEM_ADPCM_B_ROMMODE;
+    std::vector<uint8_t> buf(16);
+    for (const char* name : kChips) {
+        const uint32_t expect = !std::strcmp(name, "OPNA") ? (A | B | R)
+                              : (!std::strcmp(name, "OPNB") || !std::strcmp(name, "OPNBB")) ? (A | B) : 0;
+        FmEngineHandle e = FmEngine_Create(kRate);
+        uint32_t id = 0;
+        FmEngine_AddChip(e, name, clockOf(name), &id);
+        uint32_t mapped = 0, unmapped = 0;
+        for (uint32_t t = 0; t <= 5; ++t) {  // 0 と 5 は範囲外の番号
+            const auto type = static_cast<FmMemoryType>(t);
+            if (FmEngine_SetMemoryEx(e, id, type, 0, buf.data(), 16, FM_ACCESS_ROM) == FM_OK) mapped |= 1u << t;
+            if (FmEngine_SetMemoryEx(e, id, type, 0, nullptr, 16, FM_ACCESS_ROM) == FM_OK) unmapped |= 1u << t;
+        }
+        check(mapped == expect && unmapped == expect,
+              "memex: %s accepts map=0x%02X unmap=0x%02X (expect 0x%02X)", name, mapped, unmapped, expect);
+        FmEngine_Destroy(e);
+    }
+
+    FmEngineHandle e = FmEngine_Create(kRate);
+    uint32_t id = 0;
+    FmEngine_AddChip(e, "OPNA", clockOf("OPNA"), &id);
+    std::vector<uint8_t> b(0x1000);
+    auto mapB = [&](uint32_t base, uint32_t size, FmMemoryAccess a) {
+        return FmEngine_SetMemoryEx(e, id, FM_MEM_ADPCM_B, base, b.data(), size, a);
+    };
+    // 取り外すときは access を見ない
+    auto unmapB = [&](uint32_t base, uint32_t size) {
+        return FmEngine_SetMemoryEx(e, id, FM_MEM_ADPCM_B, base, nullptr, size, static_cast<FmMemoryAccess>(7));
+    };
+    bool ok = true;
+    ok &= mapB(0, 0, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
+    ok &= unmapB(0, 0) == FM_ERR_INVALID_ARG;
+    ok &= mapB(0xFFFFFFF0u, 0x11, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;  // 2^32 を越える
+    ok &= mapB(0xFFFFFFF0u, 0x10, FM_ACCESS_ROM) == FM_OK;               // ちょうど 2^32 まで
+    ok &= mapB(0x100, 0x100, FM_ACCESS_ROM) == FM_OK;
+    ok &= mapB(0x1FF, 0x100, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;       // 末尾と重なる
+    ok &= mapB(0x080, 0x081, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;       // 先頭と重なる
+    ok &= mapB(0x200, 0x100, FM_ACCESS_RAM) == FM_OK;                    // 隣接
+    ok &= mapB(0x000, 0x100, FM_ACCESS_ROM) == FM_OK;                    // 隣接
+    ok &= mapB(0x400, 0x10, static_cast<FmMemoryAccess>(2)) == FM_ERR_INVALID_ARG;
+    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B) == 0x310;
+    // ROM モードのメモリは別の空間
+    ok &= FmEngine_SetMemoryEx(e, id, FM_MEM_ADPCM_B_ROMMODE, 0x100, b.data(), 0x100, FM_ACCESS_ROM) == FM_OK;
+    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B_ROMMODE) == 0x100;
+    // 重なる割り当てをすべて外す
+    ok &= unmapB(0x180, 1) == FM_OK;
+    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B) == 0x210;
+    ok &= unmapB(0x0FF, 0x102) == FM_OK;  // [0, 0x100) と [0x200, 0x300) に掛かる
+    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B) == 0x10;
+    ok &= unmapB(0x5000, 0x10) == FM_OK;  // 何も無い範囲
+    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B_ROMMODE) == 0x100;
+    check(ok, "memex: range checks, overlap, adjacency, unknown access, unmap and GetMemorySize");
+
+    ok = FmEngine_SetMemory(e, id, FM_MEM_ADPCM_B, b.data(), 0x800) == FM_OK;
+    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B) == 0x800;
+    ok &= mapB(0x7FF, 1, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
+    ok &= mapB(0x800, 1, FM_ACCESS_ROM) == FM_OK;
+    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B_ROMMODE) == 0x100;
+    check(ok, "memex: SetMemory replaces the mappings of the type with [0, size)");
+
+    ok = FmEngine_SetMemoryEx(e, id + 1, FM_MEM_ADPCM_B, 0, b.data(), 1, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
+    ok &= FmEngine_SetMemoryEx(nullptr, id, FM_MEM_ADPCM_B, 0, b.data(), 1, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
+    check(ok, "memex: unknown chip_id and null handle are rejected");
+    FmEngine_Destroy(e);
+}
+
+// ---- play ------------------------------------------------------------------
+struct Map {
+    FmMemoryType          type;
+    uint32_t              base;
+    std::vector<uint8_t>* data;
+    FmMemoryAccess        access;
+};
+
+static Setup mapping(std::vector<Map> maps) {
+    return [maps](FmEngineHandle e, uint32_t id) {
+        for (const Map& m : maps)
+            FmEngine_SetMemoryEx(e, id, m.type, m.base, m.data->data(),
+                                 static_cast<uint32_t>(m.data->size()), m.access);
+    };
+}
+
+static std::vector<uint8_t> slice(const std::vector<uint8_t>& v, size_t from, size_t to) {
+    return std::vector<uint8_t>(v.begin() + from, v.begin() + to);
+}
+
+static void testPlay() {
+    const uint32_t n = 9600;
+    std::vector<uint8_t> noise = noiseBytes(0x40000, 11);
+
+    // 選択ビットの側のメモリだけを読む。読まない側に割り当てても、何も割り当てない
+    // ときと1サンプルも変わらない
+    struct Mode { uint8_t control2; const char* what; bool rom; };
+    const Mode modes[] = {
+        { 0xC0, "RAM x1", false }, { 0xC2, "RAM x8", false },
+        { 0xC1, "ROM (bit1=0)", true }, { 0xC3, "ROM (bit1=1)", true },
+    };
+    for (const Mode& m : modes) {
+        const Writes w = opnaAdpcmB(m.control2);
+        const auto none = renderWith("OPNA", nullptr, w, n);
+        const auto ram  = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, 0, &noise, FM_ACCESS_ROM } }), w, n);
+        const auto rom  = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B_ROMMODE, 0, &noise, FM_ACCESS_ROM } }), w, n);
+        const auto& read  = m.rom ? rom : ram;
+        const auto& other = m.rom ? ram : rom;
+        check(!sameBits(read, none) && sameBits(other, none),
+              "play: OPNA %s reads only %s", m.what, m.rom ? "FM_MEM_ADPCM_B_ROMMODE" : "FM_MEM_ADPCM_B");
+    }
+
+    // ROM モードは x1/x8 の選択によらず 32 バイト単位・番地順。同じバイト列を x1 の
+    // RAM モード (4 バイト単位・番地順) で鳴らした出力と一致する。データの前は
+    // 割り当てないので、番地の単位を取り違えると 0 を読んで食い違う
+    {
+        const uint32_t s = 3, e = s + 0x0F;
+        std::vector<uint8_t> d = noiseBytes((e + 1 - s) * 32, 13);
+        const auto ref = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, s * 32, &d, FM_ACCESS_ROM } }),
+                                    opnaAdpcmB(0xC0, s * 8, (e + 1) * 8 - 1), n);
+        bool ok = countNonZero(ref, 0) > n / 8;
+        for (uint8_t c2 : { uint8_t{0xC1}, uint8_t{0xC3} }) {
+            const auto rom = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B_ROMMODE, s * 32, &d, FM_ACCESS_ROM } }),
+                                        opnaAdpcmB(c2, s, e), n);
+            ok &= sameBits(rom, ref);
+        }
+        check(ok, "play: OPNA ROM mode reads bytes in address order in 32-byte units");
+    }
+
+    // ブロックを分けて割り当てても、1つのときと同じ。分け目は再生する範囲の中に置く
+    {
+        auto lo = slice(noise, 0, 0x234), hi = slice(noise, 0x234, noise.size());
+        const Writes w = opnaAdpcmB();
+        const auto one = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, 0, &noise, FM_ACCESS_ROM } }), w, n);
+        const auto two = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, 0, &lo, FM_ACCESS_ROM },
+                                                      { FM_MEM_ADPCM_B, 0x234, &hi, FM_ACCESS_RAM } }), w, n);
+        check(sameBits(one, two), "play: OPNA split blocks play like one block");
+    }
+    for (const char* name : { "OPNB", "OPNBB" }) {
+        const Memory mem = adpcmMemory(name);
+        std::vector<uint8_t> a = mem[0].second, b = mem[1].second;
+        auto a1 = slice(a, 0, 0x300), a2 = slice(a, 0x300, a.size());
+        auto b1 = slice(b, 0, 0x200), b2 = slice(b, 0x200, b.size());
+        const Writes w = opnbAdpcmA() + opnbAdpcmB();
+        const auto set = render(name, w, mem, Gains{}, n);
+        const auto one = renderWith(name, mapping({ { FM_MEM_ADPCM_A, 0, &a, FM_ACCESS_ROM },
+                                                    { FM_MEM_ADPCM_B, 0, &b, FM_ACCESS_ROM } }), w, n);
+        const auto two = renderWith(name, mapping({ { FM_MEM_ADPCM_A, 0, &a1, FM_ACCESS_ROM },
+                                                    { FM_MEM_ADPCM_A, 0x300, &a2, FM_ACCESS_RAM },
+                                                    { FM_MEM_ADPCM_B, 0, &b1, FM_ACCESS_RAM },
+                                                    { FM_MEM_ADPCM_B, 0x200, &b2, FM_ACCESS_ROM } }), w, n);
+        check(countNonZero(set, 0) > n / 4 && sameBits(set, one) && sameBits(one, two),
+              "play: %s SetMemory, SetMemoryEx and split blocks play the same", name);
+    }
+}
+
+// ---- store -----------------------------------------------------------------
+static FmEngineHandle opnaWithMemory(uint32_t& id, std::vector<uint8_t>& ram, FmMemoryAccess ram_access,
+                                     std::vector<uint8_t>& rom, FmMemoryAccess rom_access) {
+    FmEngineHandle e = FmEngine_Create(kRate);
+    FmEngine_AddChip(e, "OPNA", clockOf("OPNA"), &id);
+    FmEngine_SetMemoryEx(e, id, FM_MEM_ADPCM_B, 0, ram.data(), static_cast<uint32_t>(ram.size()), ram_access);
+    FmEngine_SetMemoryEx(e, id, FM_MEM_ADPCM_B_ROMMODE, 0, rom.data(), static_cast<uint32_t>(rom.size()), rom_access);
+    return e;
+}
+
+static void writeAll(FmEngineHandle e, uint32_t id, const Writes& ws) {
+    for (const auto& w : ws) FmEngine_Write(e, id, w.reg, w.val, w.port);
+}
+
+static void generate(FmEngineHandle e, uint32_t samples) {
+    std::vector<float> l(samples), r(samples);
+    FmEngine_Generate(e, l.data(), r.data(), samples);
+}
+
+static bool allZero(const std::vector<uint8_t>& v) {
+    return std::all_of(v.begin(), v.end(), [](uint8_t x) { return x == 0; });
+}
+
+static void testStore() {
+    const std::vector<uint8_t> pattern = noiseBytes(0x40, 17);
+    const uint32_t s = 5;  // 開始番地 (レジスタの値)
+
+    // x1 の RAM モードの転送: RAM のブロックにはその場で入り、ROM のブロックには入らない。
+    // Write の直後には入っておらず、その後の Generate が戻った時点で入っている
+    for (FmMemoryAccess access : { FM_ACCESS_RAM, FM_ACCESS_ROM }) {
+        std::vector<uint8_t> ram(0x40000, 0), rom(0x40000, 0);
+        uint32_t id = 0;
+        FmEngineHandle e = opnaWithMemory(id, ram, access, rom, FM_ACCESS_RAM);
+        writeAll(e, id, opnaTransfer(0x00, s, pattern));
+        const bool before = allZero(ram);
+        generate(e, 16);
+        std::vector<uint8_t> expect(ram.size(), 0);
+        if (access == FM_ACCESS_RAM) std::copy(pattern.begin(), pattern.end(), expect.begin() + s * 4);
+        check(before && ram == expect && allZero(rom),
+              "store: OPNA x1 transfer %s the %s block after Generate (not after Write)",
+              access == FM_ACCESS_RAM ? "reaches" : "does not reach",
+              access == FM_ACCESS_RAM ? "RAM" : "ROM");
+        FmEngine_Destroy(e);
+    }
+
+    // ROM モードの転送は ROM モード側のメモリに、32 バイト単位・番地順に入る
+    {
+        std::vector<uint8_t> ram(0x40000, 0), rom(0x40000, 0);
+        uint32_t id = 0;
+        FmEngineHandle e = opnaWithMemory(id, ram, FM_ACCESS_RAM, rom, FM_ACCESS_RAM);
+        writeAll(e, id, opnaTransfer(0x01, s, pattern));
+        generate(e, 16);
+        std::vector<uint8_t> expect(rom.size(), 0);
+        std::copy(pattern.begin(), pattern.end(), expect.begin() + s * 32);
+        check(rom == expect && allZero(ram), "store: OPNA ROM-mode transfer goes to FM_MEM_ADPCM_B_ROMMODE");
+        FmEngine_Destroy(e);
+    }
+
+    // x8 の転送は、32KB の面 8 つにビットを振り分けて入る (fmgen の並び)。
+    // 番地 L のバイトのビット p は、面 p の (L >> 3) 番目のバイトのビット (L & 7)
+    {
+        std::vector<uint8_t> ram(0x40000, 0), rom(0x40000, 0);
+        uint32_t id = 0;
+        FmEngineHandle e = opnaWithMemory(id, ram, FM_ACCESS_RAM, rom, FM_ACCESS_RAM);
+        writeAll(e, id, opnaTransfer(0x02, s, pattern));
+        generate(e, 16);
+        std::vector<uint8_t> expect(ram.size(), 0);
+        for (uint32_t k = 0; k < pattern.size(); ++k) {
+            const uint32_t addr = s * 32 + k;
+            for (uint32_t p = 0; p < 8; ++p)
+                if (pattern[k] & (1u << p)) expect[p * 0x8000 + (addr >> 3)] |= 1u << (addr & 7);
+        }
+        check(ram == expect && allZero(rom), "store: OPNA x8 transfer spreads bits over eight 32KB planes");
+        FmEngine_Destroy(e);
+    }
+
+    // RAM のブロックは複製しない。生成の合間に、まだ読んでいない所を書き換えると
+    // それ以降の出力が変わる
+    {
+        std::vector<uint8_t> a = noiseBytes(0x40000, 19), b = a, rom(1, 0);
+        uint32_t ida = 0, idb = 0;
+        FmEngineHandle ea = opnaWithMemory(ida, a, FM_ACCESS_RAM, rom, FM_ACCESS_ROM);
+        FmEngineHandle eb = opnaWithMemory(idb, b, FM_ACCESS_RAM, rom, FM_ACCESS_ROM);
+        writeAll(ea, ida, opnaAdpcmB());
+        writeAll(eb, idb, opnaAdpcmB());
+        std::vector<float> al(480), ar(480), bl(480), br(480);
+        FmEngine_Generate(ea, al.data(), ar.data(), 480);
+        FmEngine_Generate(eb, bl.data(), br.data(), 480);
+        const bool first = al == bl && ar == br;
+        // 最初の 480 サンプルで読むのは 0x100 より手前 (Δ-N と出力レートから計算して
+        // 約 90 バイト)。続く 10 回の間に 0x100 を越える
+        const std::vector<uint8_t> other = noiseBytes(0x40000, 23);
+        std::copy(other.begin() + 0x100, other.end(), b.begin() + 0x100);
+        bool later = true;
+        for (int c = 0; c < 10; ++c) {
+            FmEngine_Generate(ea, al.data(), ar.data(), 480);
+            FmEngine_Generate(eb, bl.data(), br.data(), 480);
+            later &= al == bl;
+        }
+        check(first && !later, "store: OPNA reads the RAM block in place (changes between Generate calls are heard)");
+        FmEngine_Destroy(ea);
+        FmEngine_Destroy(eb);
+    }
+}
+
+// ---- unmapped --------------------------------------------------------------
+// 直す前の OPNB は割り当ての無いメモリで null を読んで落ちるので、最後に置く
+static void testUnmapped() {
+    // OPNA: 何も割り当てなければ、レジスタ経由で転送しても鳴らない (書き込みを捨て、0 を読む)
+    {
+        const Writes play = opnaAdpcmB();
+        const auto written = renderWith("OPNA", nullptr, opnaTransfer(0x00, 0, noiseBytes(0x800, 21)) + play, 9600);
+        const auto plain   = renderWith("OPNA", nullptr, play, 9600);
+        check(sameBits(written, plain), "unmapped: OPNA drops chip writes to unmapped memory");
+    }
+
+    for (const char* name : { "OPNB", "OPNBB" }) {
+        const Writes w = opnbAdpcmA() + opnbAdpcmB();
+        // ブロックの後ろを読むと 0 (大きさを2の冪に切り上げて折り返さない)。
+        // 大きさは2の冪にしない
+        const Memory full = adpcmMemory(name);
+        std::vector<uint8_t> a(full[0].second.size(), 0), b(full[1].second.size(), 0);
+        std::copy(full[0].second.begin(), full[0].second.begin() + 0x180, a.begin());
+        std::copy(full[1].second.begin(), full[1].second.begin() + 0x180, b.begin());
+        const Memory head   = { { FM_MEM_ADPCM_A, slice(a, 0, 0x180) }, { FM_MEM_ADPCM_B, slice(b, 0, 0x180) } };
+        const Memory padded = { { FM_MEM_ADPCM_A, a }, { FM_MEM_ADPCM_B, b } };
+        check(sameBits(render(name, w, head, Gains{}, 9600), render(name, w, padded, Gains{}, 9600)),
+              "unmapped: %s reads 0 past the end of a block", name);
+
+        // 何も割り当てずに ADPCM-A/B を鳴らしても落ちず、0 を読む
+        std::vector<uint8_t> za(0x10000, 0), zb(0x40000, 0);
+        const auto none  = renderWith(name, nullptr, w, 9600);
+        const auto zeros = renderWith(name, mapping({ { FM_MEM_ADPCM_A, 0, &za, FM_ACCESS_ROM },
+                                                      { FM_MEM_ADPCM_B, 0, &zb, FM_ACCESS_ROM } }), w, 9600);
+        check(sameBits(none, zeros), "unmapped: %s reads 0 from unmapped ADPCM-A/B memory", name);
+    }
+}
+
 int main() {
     // 途中で異常終了しても、それまでの結果が残るようにする
     std::setvbuf(stdout, nullptr, _IONBF, 0);
@@ -611,6 +945,10 @@ int main() {
     testDefault();
     testNative();
     testMemory();
+    testMemoryEx();
+    testPlay();
+    testStore();
+    testUnmapped();
     std::printf(g_fail ? "FAILED %d\n" : "ALL PASSED\n", g_fail);
     return g_fail ? 1 : 0;
 }

@@ -118,17 +118,37 @@ namespace FM
 		PSG		psg;
 	};
 
+	//	[FmGenEngine] 追加。ADPCM のメモリの読み書きを差し替える口 ---------
+	//	OPNABase::SetADPCMMemory で設定すると、ADPCM-A/B のメモリの読み書きは
+	//	すべて Read/Write を通り、adpcmbuf / adpcmabuf は使わない。
+	//	addr はそのメモリのバイト単位の番地。
+	class ADPCMMemory
+	{
+	public:
+		enum Space
+		{
+			spaceA,			// ADPCM-A (OPNB)
+			spaceB,			// ADPCM-B (OPNA では ROM/RAM 選択ビットが RAM のとき)
+			spaceBROM,		// ADPCM-B の ROM/RAM 選択ビットが ROM のとき (OPNA)
+		};
+		virtual ~ADPCMMemory() {}
+		virtual uint8	Read(Space space, uint addr) = 0;
+		virtual void	Write(Space space, uint addr, uint8 data) = 0;
+	};
+
 	//	OPN2 Base ------------------------------------------------------
 	class OPNABase : public OPNBase
 	{
 	public:
 		OPNABase();
 		~OPNABase();
-		
+
 		uint	ReadStatus() { return status & 0x03; }
 		uint	ReadStatusEx();
 		void	SetChannelMask(uint mask);
-	
+		// [FmGenEngine] 追加。0 を渡すと adpcmbuf / adpcmabuf に戻る
+		void	SetADPCMMemory(ADPCMMemory* m) { adpcmmem = m; }
+
 	private:
 		virtual void Intr(bool) {}
 
@@ -162,7 +182,11 @@ namespace FM
 		uint	ReadRAM();
 		int		ReadRAMN();
 		int		DecodeADPCMBSample(uint);
-		
+		// [FmGenEngine] 追加。ADPCM-B のメモリの 1 バイトを読み書きする。
+		// adpcmmem があれば、ROM/RAM 選択ビット (control2 の bit0) で空間を選ぶ
+		uint8	ReadADPCMBMem(uint addr);
+		void	WriteADPCMBMem(uint addr, uint8 data);
+
 	// FM 音源関係
 		uint8	pan[6];
 		uint8	fnum2[9];
@@ -180,6 +204,7 @@ namespace FM
 		uint	fnum3[3];
 		
 	// ADPCM 関係
+		ADPCMMemory* adpcmmem;	// [FmGenEngine] 追加
 		uint8*	adpcmbuf;		// ADPCM RAM
 		uint	adpcmmask;		// メモリアドレスに対するビットマスク
 		uint	adpcmnotice;	// ADPCM 再生終了時にたつビット
@@ -358,6 +383,7 @@ namespace FM
 	
 		int		DecodeADPCMASample(uint);
 		void	ADPCMAMix(Sample* buffer, uint count);
+		uint8	ReadADPCMAMem(uint addr);	// [FmGenEngine] 追加
 		static void InitADPCMATable();
 		
 	// ADPCMA 関係

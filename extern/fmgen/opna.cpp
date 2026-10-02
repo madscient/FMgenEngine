@@ -388,6 +388,7 @@ bool OPNABase::tablehasmade = false;
 
 OPNABase::OPNABase()
 {
+	adpcmmem = 0;	// [FmGenEngine] 追加
 	adpcmbuf = 0;
 	memaddr = 0;
 	startaddr = 0;
@@ -635,7 +636,8 @@ void OPNABase::SetADPCMBReg(uint addr, uint data)
 
 	case 0x01:		// Control Register 2
 		control2 = data;
-		granuality = control2 & 2 ? 1 : 4;
+		// [FmGenEngine] ROM モード (bit0) も x8 と同じ刻みにした (WriteRAM の注記を参照)
+		granuality = control2 & 3 ? 1 : 4;
 		break;
 
 	case 0x02:		// Start Address L
@@ -758,37 +760,60 @@ inline void OPNABase::UpdateStatus()
 }
 
 // ---------------------------------------------------------------------------
+//	[FmGenEngine] 追加。ADPCM-B のメモリの 1 バイトの読み書き
+//
+inline uint8 OPNABase::ReadADPCMBMem(uint addr)
+{
+	if (adpcmmem)
+		return adpcmmem->Read(control2 & 1 ? ADPCMMemory::spaceBROM : ADPCMMemory::spaceB, addr);
+	return adpcmbuf[addr];
+}
+
+inline void OPNABase::WriteADPCMBMem(uint addr, uint8 data)
+{
+	if (adpcmmem)
+		adpcmmem->Write(control2 & 1 ? ADPCMMemory::spaceBROM : ADPCMMemory::spaceB, addr, data);
+	else
+		adpcmbuf[addr] = data;
+}
+
+// ---------------------------------------------------------------------------
 //	ADPCM RAM への書込み操作
 //
+//	[FmGenEngine] メモリには ReadADPCMBMem / WriteADPCMBMem を通して触るように
+//	した。ROM モード (control2 の bit0) の分岐を足した (ReadRAM / ReadRAMN も同じ)。
+//	ROM モードは x1/x8 の選択 (bit1) によらず、32 バイト単位で 1 バイトずつ番地順に
+//	アクセスする。ymfm と同じ扱い。YM2608 の実機がそうなっているかは確かめて
+//	いない (Y8950 のマニュアルの ROM の記述からの推測)。
 void OPNABase::WriteRAM(uint data)
 {
 #ifndef NO_BITTYPE_EMULATION
-	if (!(control2 & 2))
+	if (control2 & 1)
+	{
+		// ROM mode
+		WriteADPCMBMem((memaddr >> 1) & 0x3ffff, data);
+		memaddr += 2;
+	}
+	else if (!(control2 & 2))
 	{
 		// 1 bit mode
-		adpcmbuf[(memaddr >> 4) & 0x3ffff] = data;
+		WriteADPCMBMem((memaddr >> 4) & 0x3ffff, data);
 		memaddr += 16;
 	}
 	else
 	{
 		// 8 bit mode
-		uint8* p = &adpcmbuf[(memaddr >> 4) & 0x7fff];
+		uint a = (memaddr >> 4) & 0x7fff;
 		uint bank = (memaddr >> 1) & 7;
 		uint8 mask = 1 << bank;
 		data <<= bank;
 
-		p[0x00000] = (p[0x00000] & ~mask) | (uint8(data) & mask); data >>= 1;
-		p[0x08000] = (p[0x08000] & ~mask) | (uint8(data) & mask); data >>= 1;
-		p[0x10000] = (p[0x10000] & ~mask) | (uint8(data) & mask); data >>= 1;
-		p[0x18000] = (p[0x18000] & ~mask) | (uint8(data) & mask); data >>= 1;
-		p[0x20000] = (p[0x20000] & ~mask) | (uint8(data) & mask); data >>= 1;
-		p[0x28000] = (p[0x28000] & ~mask) | (uint8(data) & mask); data >>= 1;
-		p[0x30000] = (p[0x30000] & ~mask) | (uint8(data) & mask); data >>= 1;
-		p[0x38000] = (p[0x38000] & ~mask) | (uint8(data) & mask);
+		for (int i=0; i<8; i++, a+=0x8000, data>>=1)
+			WriteADPCMBMem(a, (ReadADPCMBMem(a) & ~mask) | (uint8(data) & mask));
 		memaddr += 2;
 	}
 #else
-	adpcmbuf[(memaddr >> granuality) & 0x3ffff] = data;
+	WriteADPCMBMem((memaddr >> granuality) & 0x3ffff, data);
 	memaddr += 1 << granuality;
 #endif
 
@@ -809,36 +834,43 @@ void OPNABase::WriteRAM(uint data)
 // ---------------------------------------------------------------------------
 //	ADPCM RAM からの読み込み操作
 //
+//	[FmGenEngine] WriteRAM の注記を参照
 uint OPNABase::ReadRAM()
 {
 	uint data;
 #ifndef NO_BITTYPE_EMULATION
-	if (!(control2 & 2))
+	if (control2 & 1)
+	{
+		// ROM mode
+		data = ReadADPCMBMem((memaddr >> 1) & 0x3ffff);
+		memaddr += 2;
+	}
+	else if (!(control2 & 2))
 	{
 		// 1 bit mode
-		data = adpcmbuf[(memaddr >> 4) & 0x3ffff];
+		data = ReadADPCMBMem((memaddr >> 4) & 0x3ffff);
 		memaddr += 16;
 	}
 	else
 	{
 		// 8 bit mode
-		uint8* p = &adpcmbuf[(memaddr >> 4) & 0x7fff];
+		uint a = (memaddr >> 4) & 0x7fff;
 		uint bank = (memaddr >> 1) & 7;
 		uint8 mask = 1 << bank;
 
-		data =            (p[0x38000] & mask);
-		data = data * 2 + (p[0x30000] & mask);
-		data = data * 2 + (p[0x28000] & mask);
-		data = data * 2 + (p[0x20000] & mask);
-		data = data * 2 + (p[0x18000] & mask);
-		data = data * 2 + (p[0x10000] & mask);
-		data = data * 2 + (p[0x08000] & mask);
-		data = data * 2 + (p[0x00000] & mask);
+		data =            (ReadADPCMBMem(a + 0x38000) & mask);
+		data = data * 2 + (ReadADPCMBMem(a + 0x30000) & mask);
+		data = data * 2 + (ReadADPCMBMem(a + 0x28000) & mask);
+		data = data * 2 + (ReadADPCMBMem(a + 0x20000) & mask);
+		data = data * 2 + (ReadADPCMBMem(a + 0x18000) & mask);
+		data = data * 2 + (ReadADPCMBMem(a + 0x10000) & mask);
+		data = data * 2 + (ReadADPCMBMem(a + 0x08000) & mask);
+		data = data * 2 + (ReadADPCMBMem(a + 0x00000) & mask);
 		data >>= bank;
 		memaddr += 2;
 	}
 #else
-	data = adpcmbuf[(memaddr >> granuality) & 0x3ffff];
+	data = ReadADPCMBMem((memaddr >> granuality) & 0x3ffff);
 	memaddr += 1 << granuality;
 #endif
 	if (memaddr == stopaddr)
@@ -879,15 +911,25 @@ inline int OPNABase::DecodeADPCMBSample(uint data)
 // ---------------------------------------------------------------------------
 //	ADPCM RAM からの nibble 読み込み及び ADPCM 展開
 //
+//	[FmGenEngine] WriteRAM の注記を参照
 int OPNABase::ReadRAMN()
 {
 	uint data;
 	if (granuality > 0)
 	{
 #ifndef NO_BITTYPE_EMULATION
-		if (!(control2 & 2))
+		if (control2 & 1)
 		{
-			data = adpcmbuf[(memaddr >> 4) & 0x3ffff];
+			// ROM mode
+			data = ReadADPCMBMem((memaddr >> 1) & 0x3ffff);
+			memaddr ++;
+			if (memaddr & 1)
+				return DecodeADPCMBSample(data >> 4);
+			data &= 0x0f;
+		}
+		else if (!(control2 & 2))
+		{
+			data = ReadADPCMBMem((memaddr >> 4) & 0x3ffff);
 			memaddr += 8;
 			if (memaddr & 8)
 				return DecodeADPCMBSample(data >> 4);
@@ -895,21 +937,21 @@ int OPNABase::ReadRAMN()
 		}
 		else
 		{
-			uint8* p = &adpcmbuf[(memaddr >> 4) & 0x7fff] + ((~memaddr & 1) << 17);
+			uint a = ((memaddr >> 4) & 0x7fff) + ((~memaddr & 1) << 17);
 			uint bank = (memaddr >> 1) & 7;
 			uint8 mask = 1 << bank;
 
-			data =            (p[0x18000] & mask);
-			data = data * 2 + (p[0x10000] & mask);
-			data = data * 2 + (p[0x08000] & mask);
-			data = data * 2 + (p[0x00000] & mask);
+			data =            (ReadADPCMBMem(a + 0x18000) & mask);
+			data = data * 2 + (ReadADPCMBMem(a + 0x10000) & mask);
+			data = data * 2 + (ReadADPCMBMem(a + 0x08000) & mask);
+			data = data * 2 + (ReadADPCMBMem(a + 0x00000) & mask);
 			data >>= bank;
 			memaddr ++;
 			if (memaddr & 1)
 				return DecodeADPCMBSample(data);
 		}
 #else
-		data = adpcmbuf[(memaddr >> granuality) & adpcmmask];
+		data = ReadADPCMBMem((memaddr >> granuality) & adpcmmask);
 		memaddr += 1 << (granuality-1);
 		if (memaddr & (1 << (granuality-1)))
 			return DecodeADPCMBSample(data >> 4);
@@ -918,7 +960,7 @@ int OPNABase::ReadRAMN()
 	}
 	else
 	{
-		data = adpcmbuf[(memaddr >> 1) & adpcmmask];
+		data = ReadADPCMBMem((memaddr >> 1) & adpcmmask);
 		++memaddr;
 		if (memaddr & 1)
 			return DecodeADPCMBSample(data >> 4);
@@ -1785,8 +1827,19 @@ void OPNB::InitADPCMATable()
 }
 
 // ---------------------------------------------------------------------------
+//	[FmGenEngine] 追加。ADPCM-A のメモリの 1 バイトを読む
+//
+inline uint8 OPNB::ReadADPCMAMem(uint addr)
+{
+	if (adpcmmem)
+		return adpcmmem->Read(ADPCMMemory::spaceA, addr);
+	return adpcmabuf[addr];
+}
+
+// ---------------------------------------------------------------------------
 //	ADPCMA 合成
 //
+//	[FmGenEngine] メモリには ReadADPCMAMem を通して触るようにした。
 void OPNB::ADPCMAMix(Sample* buffer, uint count)
 {
 	const static int decode_tableA1[16] = 
@@ -1829,7 +1882,7 @@ void OPNB::ADPCMAMix(Sample* buffer, uint count)
 						int data;
 						if (!(r.pos & 1)) 
 						{
-							r.nibble = adpcmabuf[r.pos>>1];
+							r.nibble = ReadADPCMAMem(r.pos>>1);
 							data = r.nibble >> 4;
 						}
 						else

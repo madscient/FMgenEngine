@@ -29,7 +29,7 @@ endif()
 # =======================================================
 add_library(FmEngineApi SHARED
     src/FmGenEngine.cpp
-    # fmgen ソース一式 (無改造)
+    # fmgen ソース一式 (改変箇所には [FmGenEngine] の印)
     ${FMGEN_DIR}/fmgen.cpp
     ${FMGEN_DIR}/opna.cpp
     ${FMGEN_DIR}/opm.cpp
@@ -55,7 +55,7 @@ target_include_directories(FmEngineApi PRIVATE
 # fmgen.h は types.h (uint/uint8/int32 等の typedef) を自身では
 # include しない (fmgen.h 内で `//#include "types.h"` とコメントアウト
 # されている) ため、fmgen 関連の全翻訳単位に対して types.h を
-# 強制インクルードする。fmgen 本体ソースは無改造のまま解決できる。
+# 強制インクルードする。fmgen 本体のソースに include を足さずに解決できる。
 if (MSVC)
     set(FMGEN_FORCE_INCLUDE /FI"${FMGEN_DIR}/types.h")
 else()

@@ -93,6 +93,16 @@ fmgen 0.08 の `OPN2` はヘッダ宣言のみで実装が皆無だった。
 呼ぶ形にしたので、`Mix` の出力は変わらない。部位ごとのゲイン
 (`FmEngine_SetPartGain`) の実現に使う。
 
+**6. `opna.h` / `opna.cpp` — ADPCM のメモリアクセスの差し替え口と、ROM モードの番地**
+`OPNABase` に、メモリの読み書きを差し替える口 (`ADPCMMemory`、`SetADPCMMemory`) を
+追加し、ADPCM-A/B のメモリの読み書きをすべてここに通すようにした。設定しなければ、
+元どおり内部のバッファを読み書きする。ADPCM-B は ROM/RAM 選択ビットに応じて
+ROM モードと RAM モードの別々の空間として呼ぶ。外部メモリの割り当て
+(`FmEngine_SetMemoryEx`) の実現に使う。
+あわせて、ADPCM-B の ROM モード (control2 の bit0) は、x1/x8 の選択 (bit1) によらず
+32 バイト単位で番地順に読み書きするようにした。元の fmgen は ROM モードでも bit1 に
+従って x1/x8 の読み方をしていた。
+
 ## ライセンス
 
 | コンポーネント | パス | ライセンス |
@@ -185,32 +195,94 @@ fmgen の OPNA はリズム音源を WAV ファイル
 WAV ファイルが存在しない場合はリズムチャンネルが無音になるだけで、
 FM / SSG / ADPCM-B チャンネルの動作には影響しない。
 
-### ADPCM メモリ設定
+### 外部メモリ (ADPCM)
+
+ADPCM を持つチップのメモリには、アプリケーションが用意したブロックを割り当てる。
+割り当てはオーディオストリームを始める前に行う (スレッドセーフではない)。
+
+| `FmMemoryType` | チップ | 内容 |
+|---|---|---|
+| `FM_MEM_ADPCM_A`         | OPNA | リズム音の内蔵 ROM の内容。受け付けるが読まない (リズムは WAV ファイルから鳴らす。「OPNA リズム音源」を参照) |
+| `FM_MEM_ADPCM_A`         | OPNB, OPNBB | ADPCM-A のメモリ |
+| `FM_MEM_ADPCM_B`         | OPNA | ADPCM-B の ROM/RAM 選択ビットが RAM のときにアクセスするメモリ |
+| `FM_MEM_ADPCM_B`         | OPNB, OPNBB | ADPCM-B のメモリ |
+| `FM_MEM_ADPCM_B_ROMMODE` | OPNA | ADPCM-B の ROM/RAM 選択ビットが ROM のときにアクセスするメモリ |
+
+OPNA は、ROM/RAM 選択ビット (port1 の `0x01` の bit0) で、ROM モードと RAM モードの
+別々のメモリにアクセスする。ROM モードで鳴らすデータは `FM_MEM_ADPCM_B_ROMMODE` に
+割り当てる。`FM_MEM_ADPCM_B` に割り当てたデータは RAM モードでだけ読まれる。
+
+割り当ての無い番地を読むと 0 で、書き込みは捨てる。何もつながっていない状態から
+始まるので、OPNA にレジスタ経由で ADPCM-B のデータを転送して鳴らすには、先に RAM を
+割り当てておく (`FmEngine_SetMemoryEx` の `FM_ACCESS_RAM`、または
+`FmEngine_SetMemory`)。
+
+#### FmEngine_SetMemoryEx
 
 ```c
-// OPNA: ADPCM-B RAM 初期値
-// (FM_MEM_ADPCM_A は fmgen の OPNA では不使用。渡しても FM_OK を返して無視する)
-FmEngine_SetMemory(eng, opnaId, FM_MEM_ADPCM_B, adpcmbData, adpcmbSize);
-
-// OPNB / OPNBB: ADPCM-A / ADPCM-B ROM
-FmEngine_SetMemory(eng, opnbId, FM_MEM_ADPCM_A, adpcmaRom, adpcmaSize);
-FmEngine_SetMemory(eng, opnbId, FM_MEM_ADPCM_B, adpcmbRom, adpcmbSize);
-// SetMemory はストリーム開始前 (AddChip 直後) に呼ぶこと
+// OPNA: RAM モードのメモリに 256KB の RAM、ROM モードのメモリに ROM イメージ
+static uint8_t ram[0x40000];
+FmEngine_SetMemoryEx(eng, opnaId, FM_MEM_ADPCM_B, 0, ram, sizeof ram, FM_ACCESS_RAM);
+FmEngine_SetMemoryEx(eng, opnaId, FM_MEM_ADPCM_B_ROMMODE, 0, rom, romSize, FM_ACCESS_ROM);
 ```
 
-- DLL は `data` に書き込まない。OPNA の ADPCM-B は DLL の内部に写すので、
-  チップがメモリに書き込んでも `data` は変わらない。OPNB / OPNBB は `data` を
-  参照するので、`FmEngine_Destroy` が戻るまで解放しないこと。
-- `FM_MEM_ADPCM_B_ROMMODE`、範囲外の種別、`size` が 0、未知の `chip_id` を渡すと
-  `FM_ERR_INVALID_ARG` を返す。チップが持たない種別は `FM_OK` を返して無視する。
-- `FmEngine_SetMemoryEx` (任意のエクスポート) はエクスポートしない。
-- OPNA の ADPCM-B は、ROM/RAM 選択ビットによらず `FM_MEM_ADPCM_B` で渡した
-  データを読む (fmgen が ROM モードを区別しないため)。
+- `[base, base + size)` に `data` を割り当てる。番地 `base + i` のバイトが `data[i]`。
+  範囲が重ならなければ、1つのメモリに複数のブロックを並べられる。
+- ブロックは複製せずに参照する。割り当てを外すか `FmEngine_Destroy` が戻るまで
+  解放しないこと。
+- `FM_ACCESS_RAM` のブロックには、チップの書き込み (レジスタ経由の転送) をその場で
+  書く。`FM_ACCESS_ROM` のブロックへの書き込みは捨てる。
+- ROM/RAM 選択ビットが ROM の間にレジスタ経由で転送したデータは、
+  `FM_MEM_ADPCM_B_ROMMODE` に書く。
+- `data` に `NULL` を渡すと、`[base, base + size)` と重なるブロックをすべて外す
+  (`access` は見ない)。
+- 未知の `chip_id`、チップが持たない `mem_type`、`size` が 0、`base + size` が 2^32 を
+  越える、既存のブロックと範囲が重なる、未知の `access` のときは `FM_ERR_INVALID_ARG`
+  を返す。
 
-> **FMEngineTest との互換性**: FMEngineTest が `"OPNA"` に対して
-> `FM_MEM_ADPCM_A` (`ym2608.rom`) を渡す場合、fmgen の OPNA はリズム音源を
-> WAV ファイルから読み込む設計のため、このデータは使用されない。
-> `FM_OK` を返して無視する設計になっており、他チャンネルの動作に影響しない。
+#### FmEngine_SetMemory / FmEngine_GetMemorySize
+
+```c
+FmEngine_SetMemory(eng, opnbId, FM_MEM_ADPCM_A, adpcmaRom, adpcmaSize);
+FmEngine_SetMemory(eng, opnbId, FM_MEM_ADPCM_B, adpcmbRom, adpcmbSize);
+```
+
+`FmEngine_SetMemory` は、`mem_type` のメモリを `[0, size)` の `data` だけにする
+(それまでのブロックは外れる)。DLL は `data` に書き込まない。
+
+- OPNA の `FM_MEM_ADPCM_B` は DLL の内部に写す。チップの書き込みは写しに入る。
+- それ以外は `data` を参照する。割り当てを外すか `FmEngine_Destroy` が戻るまで
+  解放しないこと。
+- `FM_MEM_ADPCM_B_ROMMODE`、範囲外の種別、`data` が `NULL`、`size` が 0、未知の
+  `chip_id` を渡すと `FM_ERR_INVALID_ARG` を返す。チップが持たない種別は `FM_OK` を
+  返して無視する。
+
+`FmEngine_GetMemorySize` は、割り当てたブロックの大きさの合計を返す。
+
+#### 書き込みが反映される時点
+
+`FmEngine_Write` の書き込みは、次の `FmEngine_Generate` の中でチップに反映される。
+チップがレジスタ経由の転送でメモリに書いた値は、その `FmEngine_Generate` が戻った
+時点で `FM_ACCESS_RAM` のブロックに入っている。DLL がブロックを読み書きするのは
+`FmEngine_Generate` の実行中だけ。
+
+#### 番地とバイトの並び
+
+1番地が1バイト。チップの番地レジスタ (開始・終了番地など) の単位と、ブロックの
+バイトの並びは次のとおり。
+
+| チップ・モード | 番地レジスタの単位 | バイトの並び |
+|---|---|---|
+| OPNA の RAM モード x1 (port1 `0x01` の bit1=0) | 4 バイト | 番地順 |
+| OPNA の RAM モード x8 (bit1=1) | 32 バイト | 32KB の面 8 つにビットを振り分ける |
+| OPNA の ROM モード (bit0=1) | 32 バイト (bit1 によらない) | 番地順 |
+| OPNB, OPNBB の ADPCM-A / ADPCM-B | 256 バイト | 番地順 |
+
+x8 の振り分け: チップから見て L 番目のバイトのビット p は、メモリの
+`p × 0x8000 + (L >> 3)` 番地のバイトのビット `L & 7` に置かれる。
+
+OPNA の番地は 256KB (`0x00000`〜`0x3FFFF`) の範囲で折り返す。それより後ろに割り当てた
+ブロックは読まれない。
 
 ### 部位ごとのゲイン
 

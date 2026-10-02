@@ -14,7 +14,7 @@
 // fmgen の PSG::SetReg(regnum, data) はアドレスラッチ不要で直接レジスタに
 // 書き込む方式 (emu2149 の PSG_writeReg と同じ流儀)。
 //
-// 依存: fmgen 0.08 (cisc) — extern/fmgen 以下にオリジナルのまま配置
+// 依存: fmgen 0.08 (cisc) — extern/fmgen 以下 (改変箇所には [FmGenEngine] の印)
 
 #include "fmgen/psg.h"
 #include "FmGenChip.h"   // fmgen_detail::kScale, FM::Sample 互換のため

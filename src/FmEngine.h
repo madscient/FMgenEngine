@@ -154,22 +154,39 @@ public:
         return true;
     }
 
-    // 外部メモリ設定 (OPNA: ADPCM-B / OPNB: ADPCM-A, ADPCM-B)
-    // chip_id: addChip() で取得した ID
-    // data: ROM/RAM データへのポインタ (呼び出し元が寿命を管理すること)
-    // size: データサイズ (バイト)
-    // ※ オーディオスレッド起動前に呼ぶこと (スレッドセーフではない)
-    // 未知の chip_id なら false
-    bool setMemory(uint32_t chip_id, FmGenAccessClass access_type,
+    // 外部メモリ。どれもオーディオスレッド起動前に呼ぶこと (スレッドセーフではない)。
+    // 参照する data は、割り当てを外すかエンジンを破棄するまで解放しないこと。
+    //
+    // mapMemory: C API の FmEngine_SetMemoryEx と同じ。type のメモリの
+    // [base, base + size) に data を割り当てる。data が nullptr なら、その範囲と
+    // 重なる割り当てをすべて外す。未知の chip_id、チップが持たない type、
+    // size が 0、範囲が 2^32 を越える、既存の割り当てと重なる、未知の access
+    // なら false。
+    bool mapMemory(uint32_t chip_id, ChipMemoryType type, uint32_t base,
+                   uint8_t* data, uint32_t size, ChipMemoryAccess access) {
+        if (chip_id >= m_chips.size() || !m_chips[chip_id]->hasMemory(type)) return false;
+        if (!data) return m_chips[chip_id]->unmapMemory(type, base, size);
+        if (access != ChipMemoryAccess::ROM && access != ChipMemoryAccess::RAM) return false;
+        return m_chips[chip_id]->mapMemory(type, base, data, size, access);
+    }
+
+    // C API の FmEngine_SetMemory。type の割り当てを [0, size) の data だけにする。
+    // チップが持たない type も受け付ける (受け付けるだけで、チップは読まない)。
+    // ADPCM_B_ROMMODE、範囲外の type、data が nullptr、size が 0、未知の chip_id
+    // なら false。
+    bool setMemory(uint32_t chip_id, ChipMemoryType type,
                    const uint8_t* data, uint32_t size) {
-        if (chip_id >= m_chips.size()) return false;
-        m_chips[chip_id]->setMemory(access_type, data, size);
+        if (chip_id >= m_chips.size() || !data || size == 0) return false;
+        if (type != ChipMemoryType::ADPCM_A && type != ChipMemoryType::ADPCM_B &&
+            type != ChipMemoryType::PCM) return false;
+        m_chips[chip_id]->setMemory(type, data, size);
         return true;
     }
 
-    uint32_t memorySize(uint32_t chip_id, FmGenAccessClass access_type) const {
+    // 割り当てたブロックの大きさの合計
+    uint32_t memorySize(uint32_t chip_id, ChipMemoryType type) const {
         if (chip_id >= m_chips.size()) return 0;
-        return m_chips[chip_id]->memorySize(access_type);
+        return m_chips[chip_id]->memorySize(type);
     }
 
     // OPNA リズムサンプル(WAV)読み込み。OPNA 以外のチップでは何もせず true を返す。

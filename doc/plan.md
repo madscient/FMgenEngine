@@ -25,11 +25,10 @@ YMEngine (https://github.com/madscient/YMEngine) は参照実装。ヘッダ
 | 仕様書のコミット | 内容 | FmGenEngine |
 |---|---|---|
 | `e39b206` | 部位ごとのゲイン | 対応済み |
-| `e002890`、`c0589c1` | 外部メモリの ROM/RAM (`FmEngine_SetMemoryEx` は任意) | 一部対応 (列挙値と `SetMemory` の規則。`SetMemoryEx` はエクスポートしない。OPNA の ROM モードは**未対応**) |
+| `e002890`、`c0589c1` | 外部メモリの ROM/RAM (`FmEngine_SetMemoryEx` は任意) | 対応済み (`SetMemoryEx` をエクスポートする) |
 | `866f4a3` | `AddChip` の clock=0 を廃止 | 対応済み |
 
-次に追従するときは、`866f4a3` から先の `docs/FmEngineApi.md` の差分と、
-未対応の部分を見る。
+次に追従するときは、`866f4a3` から先の `docs/FmEngineApi.md` の差分を見る。
 
 ## 回帰テスト (`_test/`)
 
@@ -38,7 +37,7 @@ CMake には組み込んでいない。fmgen のソースと `src/FmGenEngine.cp
 
 | ファイル | 見ていること |
 |---|---|
-| `api_test.cpp` | `AddChip` が clock=0 を拒否すること。部位ごとのゲインの受け付け・既定値・読み戻し・`GetPartMask`・不正な引数の拒否 (accept)。`FM_PART_OPN_FM` が FM と ADPCM に、`FM_PART_OPN_SSG` が SSG に掛かること、L/R が独立なこと、チップのゲインとの積になること (route)。既定のゲインで fmgen の `Mix` と全サンプル一致すること (default)。`GetNativeRate` の値と、その値が fmgen の実際のレートであることを FM と SSG の音程から確かめる。単体 SSG と OPN 系の SSG 部のトーン周波数が TP から正しく決まること (native)。`SetMemory` の拒否・`GetMemorySize`・エンジンが data に書き込まないこと (memory) |
+| `api_test.cpp` | `AddChip` が clock=0 を拒否すること。部位ごとのゲインの受け付け・既定値・読み戻し・`GetPartMask`・不正な引数の拒否 (accept)。`FM_PART_OPN_FM` が FM と ADPCM に、`FM_PART_OPN_SSG` が SSG に掛かること、L/R が独立なこと、チップのゲインとの積になること (route)。既定のゲインで fmgen の `Mix` と全サンプル一致すること (default)。`GetNativeRate` の値と、その値が fmgen の実際のレートであることを FM と SSG の音程から確かめる。単体 SSG と OPN 系の SSG 部のトーン周波数が TP から正しく決まること (native)。`SetMemory` の拒否・`GetMemorySize`・エンジンが data に書き込まないこと (memory)。`SetMemoryEx` の受け付けと範囲の検査、`SetMemory` が割り当てを置き換えること (memex)。OPNA の ADPCM-B が ROM/RAM 選択ビットの側のメモリだけを読むこと、ROM モードの番地の単位と並び、ブロックを分けても同じ出力になること (play)。転送が RAM のブロックにその場で入り ROM には入らないこと、入る時点、ROM モードと x8 の転送の行き先、RAM のブロックを複製しないこと (store)。割り当ての無い番地で 0 を読み書き込みを捨てること、OPNB が落ちないこと (unmapped) |
 
 Windows (vcvars64.bat を通した cmd、リポジトリ直下で):
 
@@ -54,7 +53,8 @@ include しているため。試していない。
 
 走らせる場面: `FmGenChip.h` / `FmGenExtChip.h` / `FmEngine.h` / `FmGenEngine.cpp`
 の部位・ゲイン・レート・クロック・外部メモリまわり、fmgen の `Mix` / `MixSplit` /
-`SetPrescaler` / ADPCM のメモリアクセスを変えたとき。
+`SetPrescaler` / ADPCM のメモリアクセス (`ReadRAM` / `WriteRAM` / `ReadRAMN` /
+`ADPCMAMix`、差し替え口) を変えたとき。
 
 テストは `operator new` を「確保したメモリを 0 で埋める」ものに差し替えている。
 fmgen に未初期化のまま使われるメンバがあり (下の「気づいたが手を付けていない
@@ -62,6 +62,145 @@ fmgen に未初期化のまま使われるメンバがあり (下の「気づい
 ため。fmgen を直した場合もこの差し替えは残してよい。
 
 ## 経緯
+
+### 2026-10-02 OPNA の ADPCM の ROM/RAM を区別し、SetMemoryEx をエクスポートする
+
+仕様書 (FMEngineTest `e002890`、`c0589c1`) への追従の残り。利用者の指示: OPNA の
+ADPCM メモリを仕様どおり RAM と ROM で区別する。`FmEngine_SetMemoryEx` にも対応する。
+
+#### 利用者と決めたこと
+
+- **何も割り当てていないメモリは、何もつながっていない扱い** (読むと 0、書き込みは
+  捨てる)。仕様の文言と YMEngine に合わせた。
+  外から見える変化: `SetMemory` も `SetMemoryEx` もせずにレジスタ経由で ADPCM-B を
+  転送して鳴らしていたアプリは、無音になる。FMEngineTest は OPNA の ADPCM-B を
+  使っていない (パッチを読んで確認)。
+  前提: アプリが RAM をつなぐ手段 (`SetMemoryEx` の RAM、`SetMemory` の写し) を
+  持つこと。
+  見送った案: 既定で 256KB の内部 RAM をつないでおき、ADPCM_B に初めて割り当てた
+  ときに外す (今までの動作が残るが、規則が1つ増える)。
+  やり直しの値段: ラッパーのコンストラクタで内部 RAM を割り当てる数行、テストの
+  unmapped の1項目、README。
+- **ROM モードは実機に合わせる**: x1/x8 の選択 (bit1) によらず、32 バイト単位で
+  番地順に読み書きする。RAM モード (x1/x8) は fmgen のまま。
+  根拠: ymfm の `adpcm_b_channel::address_shift()` (ROM なら 5 ビット。YMEngine の
+  `extern/ymfm` で読んだ) と、FMEngineTest の CHANGELOG にある Y8950 のマニュアルの
+  ROM の記述 (バイト単位のアクセス、32 バイト単位のアドレス)。
+  前提: YM2608 の ROM モードが Y8950 と同じ読み方であること。**推測** (YM2608 の
+  資料は見ていない)。崩れたら ROM の分岐を直す。
+  見送った案: fmgen のまま (ROM も bit1 で x1/x8 の読み方をする。実機用の ROM
+  イメージがそのままでは鳴らない見込み)、x8 も番地順にする (YMEngine と同じ並び。
+  x8 で `SetMemory` したデータの読まれ方が変わり、x1/x8 を切り替えたときの fmgen の
+  再現が失われる)。
+  やり直しの値段: fmgen の `WriteRAM` / `ReadRAM` / `ReadRAMN` の ROM の分岐と
+  `SetADPCMBReg` の1行、テストの play / store の各1項目、README の表。
+
+#### YMEngine に合わせて決めたこと
+
+相談せず、上の「仕様が定めない細部の振る舞いは YMEngine に合わせる」による。実装の
+前に一覧を利用者に示した。
+
+- `SetMemoryEx` が受け付ける種別: OPNA は ADPCM_A / ADPCM_B / ADPCM_B_ROMMODE、
+  OPNB/OPNBB は ADPCM_A / ADPCM_B。ほかのチップは持たない。OPNA の ADPCM_A
+  (リズムの内蔵 ROM) は受け付けて読まない (fmgen のリズムは WAV)
+- 検査: size 0、base + size が 2^32 を越える、重なり、未知の access は
+  `FM_ERR_INVALID_ARG`。data が null なら重なる割り当てを外す (access は見ない)。
+  `FM_ERR_UNAVAILABLE` は返さない
+- `SetMemory` はその種別の割り当てを [0, size) だけにする。OPNA の ADPCM_B は
+  今までどおり写し (チップの書き込みは写しに入る)、ほかは参照。YMEngine は参照して
+  書き込みを捨てるが、仕様は複製してよいとしているので、今までの FmGenEngine の
+  動作を残した。外から見える変化: 写しは [0, size) だけになり、size より後ろへの
+  転送は捨てる (今までは 256KB の内部バッファに入っていた)
+- `GetMemorySize` は割り当てたブロックの大きさの合計。外から見える変化: OPNA の
+  ADPCM_A が 0 ではなく渡した大きさを返す
+- ROM モード中のレジスタ経由の転送は止めない (ROM モード側のメモリに書く)。実機で
+  止まるかはチップの動作の問題で、YMEngine も止めていない
+
+#### 仕様から導いたこと (相談せずに決めた)
+
+- OPNB/OPNBB の ADPCM-B の番地の範囲を 16MB (開始・終了番地のレジスタで表せる範囲)
+  にした。今までは `SetMemory` の大きさを2の冪に切り上げたマスクで折り返し、大きさが
+  2の冪でないと、その間はバッファの外を読んでいた。割り当ての無い番地は 0 なので、
+  大きさで折り返す理由が無くなった
+- OPNA の番地は fmgen のまま 256KB で折り返す。ROM モードも同じにした。実機の ROM の
+  番地の幅は確かめていない (**推測**: Y8950 のマニュアルの「最大 256KB」と同じ扱い)
+
+#### 実装
+
+- fmgen (`opna.h` / `opna.cpp`、`[FmGenEngine]` の印): 読み書きの差し替え口
+  `ADPCMMemory` と `OPNABase::SetADPCMMemory`。ADPCM-B は `ReadADPCMBMem` /
+  `WriteADPCMBMem`、ADPCM-A は `ReadADPCMAMem` を通す。口が無ければ今までどおり
+  `adpcmbuf` / `adpcmabuf`。ROM モードの分岐。x8 の書き込みの8行の展開はループに
+  した (同じ動作)。README の「fmgen ソースへの変更点」の 6
+- `FmGenChip.h`: `FmGenAccessClass` を `ChipMemoryType` / `ChipMemoryAccess` (番号は
+  C API と同じ。`FmGenEngine.cpp` の `static_assert` で照合) に置き換えた。
+  `fmgen_detail::AdpcmMemoryMap` が割り当てを持ち、fmgen の口を実装する。
+  `OpnFamilyChip` は OPNA/OPNB/OPNBB でこれを fmgen に渡す。OPNB/OPNBB は
+  `SetMemory` でチップを作り直さなくなった (今までは `Init` を呼び直して Reset して
+  いた)
+- `FmEngine.h` / `FmGenEngine.cpp` / `FmGenEngine.h` / `.def`: `mapMemory` と
+  `FmEngine_SetMemoryEx`。検査の形は YMEngine の `FmEngine.h` と同じ
+- 仕様の RAM のブロックの約束 (1〜3) は、レジスタ書き込みが `Generate` の最初に
+  キューから適用されることで満たす (コードで確認: `FmEngine::generate`)
+- 「fmgen は無改造・オリジナルのまま」という古い注記 (`FmGenChip.h`、
+  `FmGenExtChip.h`、`CMakeLists.txt`) を実態に合わせて直した
+- テスト: `opnaWriteRam` を `opnaTransfer` (開始番地と control2 を指定) に、
+  `render` の中身を `renderWith` (割り当てを呼び出し側で行う) に分けた
+
+#### 確認
+
+**確認済み** — `api_test` が全件通る (MSVC 19.51)。
+
+**確認済み** — 直す前のコード (`3ebb4aa`) で新しいテストを走らせた。`SetMemoryEx` が
+無いので、base 0 の ADPCM_A/B だけを `SetMemory` に回すスタブを写しに足した。落ちた
+項目のうち、スタブの制約によらないもの: OPNA の ADPCM_A の大きさ (0 を返す)、ROM
+モードが FM_MEM_ADPCM_B を読むこと、RAM のブロックに転送が入らないこと (写しに書く)、
+何も割り当てない OPNA で転送が鳴ること、OPNB がブロックの後ろを読むこと。最後の項目
+(何も割り当てない OPNB の ADPCM-A) で null を読んでプロセスが落ちた (終了コード 139)。
+
+**確認済み** — 今のコードの写しに改変を入れ、テストが落ちることを見た:
+
+- ROM モードの分岐を通らない → ROM の番地順の再生、ROM モードの転送
+- 選択ビットを見ない → ROM モードの振り分けの2項目と、上の2項目
+- RAM のブロックを写して使う → store の4項目
+- 差し替え口の読み出しを壊す → default の OPNA (x1/x8)・OPNB・OPNBB ほか
+- 差し替え口の x8 の読み出しだけを 0 にする → default の OPNA x8 ほか (default の
+  x8 のケースで ADPCM が実際に鳴っていることの裏付け)
+- ROM のブロックにも書く → ROM のブロックに転送が入らないこと
+
+**確認済み** — 直す前 (`3ebb4aa`) と後の出力の比較。`SetMemory` だけを使う同じ
+プログラムを両方のソースでビルドし、51,700 サンプル (480 と 37 の呼び出しを交互) の
+出力のハッシュを比べた。OPN、OPN2、SSG、OPNA (FM+SSG+ADPCM-B x1、小さいデータ、x1 と
+x8 の転送と再生)、OPNB (2の冪でない大きさを含む)、OPNBB の10件は一致。意図して変えた
+3件 (`SetMemory` の範囲より後ろへの転送、何も割り当てない転送、ROM モードの再生) は
+食い違った。比較用のプログラムはリポジトリに残していない。
+
+**確認済み** — CMake (VS 18 2026、Release) でビルドが通り、LNK の警告が出ない。
+dumpbin で、DLL が `FmEngine_SetMemoryEx` を含む 18 関数をエクスポートし、
+インポートライブラリの参照先が `FmGenEngine.dll` であることを見た。
+
+試験していないこと:
+
+- RAM のブロックを別スレッドから書き換えながら鳴らすこと。約束の 2 (Write の前に
+  書いた値が見える) は、キューの atomic の release/acquire による順序に頼っている
+  (**未検証**: 負荷を掛けた試験はしていない)
+- CMake の Debug 構成、MSVC 以外のコンパイラ
+
+#### 気づいたが手を付けていないこと
+
+1. **x8 の並びが YMEngine と違う**。FmGenEngine は fmgen の再現で 8 面にビットを
+   振り分け、YMEngine は番地順。同じ RAM のイメージを両方の x8 で鳴らすと食い違う。
+   仕様はバイトの並びをアプリとエンジンの取り決めにしているので、README に並びを
+   書くにとどめた
+2. **`FmEngine_Write` がキューの満杯を報告しない**。`FmEngine::write` は
+   `SpscQueue::push` の失敗を無視する (コードで確認)。容量は 4095 件で、`Generate`
+   を挟まずにそれ以上書くと、溢れた分は黙って捨てられる。ADPCM のデータを
+   レジスタ経由で転送すると起きやすい。YMEngine も同じかは見ていない
+3. **OPNA の `granuality` は control2 (port1 の 0x01) を書くまで初期化されない**。
+   `OPNABase::Reset` の `SetReg` は非 virtual で、`SetADPCMBReg` に届かない (コードで
+   確認)。下の古い節の「気づいたが手を付けていないこと」の 1 (未初期化のメンバ) の
+   一つ。control2 を書かずに再生しても L/R のビットが 0 なので音には出ない
+   (**推測**: コードから。試していない)
 
 ### 2026-10-02 外部メモリの改定に一部追従する (列挙値と SetMemory の規則)
 
@@ -103,7 +242,7 @@ YMEngine に合わせる。
 `opna.cpp` で使うのは bit1 と bit6/7 だけ)、ROM モードでも `FM_MEM_ADPCM_B` の
 データを読む。README に現状として書いた。直すなら fmgen の `ReadRAM` /
 `ReadRAMN` で bit0 を見て 0 を返す改造になる (YMEngine は `ac29207` で同じ扱いに
-した)。
+した)。(→ 同日、`SetMemoryEx` とあわせて対応した。上の節)
 
 ### 2026-10-02 AddChip の clock=0 (標準クロック) を廃止する
 

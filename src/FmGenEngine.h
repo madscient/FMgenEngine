@@ -48,7 +48,6 @@ typedef enum FmMemoryType {
 } FmMemoryType;
 
 // ---- 外部メモリにつないだデバイスの種類 ---------------------------------
-// FmEngine_SetMemoryEx 用。FmGenEngine は FmEngine_SetMemoryEx をエクスポートしない。
 typedef enum FmMemoryAccess {
     FM_ACCESS_ROM = 0,  // 割り当て中は内容が変わらない。チップからの書き込みは捨てる
     FM_ACCESS_RAM = 1,  // チップ以外も書き換えてよい。ブロックをその場で読み書きする
@@ -156,21 +155,44 @@ FMENGINE_API FmResult FMENGINE_CALL FmEngine_GetPartMask(
 
 // =========================================================
 //  外部メモリ設定
-//  data の寿命は呼び出し元が管理すること。FmGenEngine は OPNA の ADPCM-B を
-//  内部に写し、OPNB/OPNBB の ADPCM-A/B は参照するので、OPNB/OPNBB に渡した data は
-//  FmEngine_Destroy が戻るまで解放しないこと。エンジンは data に書き込まない。
-//  mem_type に FM_MEM_ADPCM_B_ROMMODE は使わない (FM_ERR_INVALID_ARG)。
 //  オーディオストリーム開始前に呼ぶこと (スレッドセーフではない)。
 //
-//  FmEngine_GetMemorySize: 渡したデータの大きさ (バイト)。使わない種別は 0。
+//  FmEngine_SetMemory: mem_type のメモリを [0, size) の data だけにする
+//  (それまでの割り当ては外す)。エンジンは data に書き込まない。
+//  OPNA の FM_MEM_ADPCM_B は内部に写し、チップの書き込みは写しに入る。
+//  それ以外は data を参照するので、割り当てを外すか FmEngine_Destroy が戻るまで
+//  解放しないこと。
+//  FM_MEM_ADPCM_B_ROMMODE は FM_ERR_INVALID_ARG (FmEngine_SetMemoryEx を使う)。
 //
-//  FmEngine_SetMemoryEx (任意のエクスポート) は FmGenEngine にはない。
+//  FmEngine_GetMemorySize: 割り当てたブロックの大きさの合計 (バイト)。
 // =========================================================
 FMENGINE_API FmResult  FMENGINE_CALL FmEngine_SetMemory(
     FmEngineHandle engine, uint32_t chip_id,
     FmMemoryType mem_type, const uint8_t* data, uint32_t size);
 FMENGINE_API uint32_t  FMENGINE_CALL FmEngine_GetMemorySize(
     FmEngineHandle engine, uint32_t chip_id, FmMemoryType mem_type);
+
+// =========================================================
+//  外部メモリの割り当て (ROM/RAM を区別する)
+//  mem_type のメモリの [base, base + size) に data を割り当てる。
+//  番地 base + i のバイトが data[i]。割り当ての無い番地を読むと 0、
+//  書き込みは捨てる。data == nullptr なら、その範囲と重なる割り当てを
+//  すべて外す (access は無視)。
+//  未知の chip_id、チップが持たない mem_type、size が 0、base + size が 2^32 を
+//  越える、既存の割り当てと範囲が重なる、未知の access なら FM_ERR_INVALID_ARG。
+//
+//  ブロックは複製しない。割り当てを外すか FmEngine_Destroy が戻るまで data を
+//  解放しないこと。FM_ACCESS_RAM のブロックにはチップの書き込みをその場で入れる。
+//  エンジンがブロックを読み書きするのは FmEngine_Generate の実行中だけ。
+//  FmEngine_Write でチップがメモリに書いた値は、その書き込みを反映した
+//  FmEngine_Generate (FmEngine_Write の後に始まった最初の呼び出し) が戻った
+//  時点でブロックに入っている。
+//  オーディオストリーム開始前に呼ぶこと (スレッドセーフではない)。
+// =========================================================
+FMENGINE_API FmResult FMENGINE_CALL FmEngine_SetMemoryEx(
+    FmEngineHandle engine, uint32_t chip_id,
+    FmMemoryType mem_type, uint32_t base,
+    uint8_t* data, uint32_t size, FmMemoryAccess access);
 
 // =========================================================
 //  波形生成

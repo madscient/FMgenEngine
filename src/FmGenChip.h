@@ -41,7 +41,7 @@
 //   加算することで対応させる。
 //   OPN/OPM はポート概念を持たないため port は無視する。
 //
-// 依存: fmgen 0.08 (cisc) — extern/fmgen 以下にオリジナルのまま配置
+// 依存: fmgen 0.08 (cisc) — extern/fmgen 以下 (改変箇所には [FmGenEngine] の印)
 //       C++17 以上
 
 // fmgen の各ヘッダ (fmgen.h/opna.h/opm.h/psg.h) は uint/uint8/int32 等の
@@ -50,7 +50,7 @@
 // オリジナルの Visual Studio プロジェクトでは各 .cpp が headers.h
 // (windows.h 等を include) を経由して間接的に解決していたと見られるが、
 // ここでは types.h を明示的に先に include することで対応する。
-// fmgen 本体 (.h/.cpp) のロジックには一切手を入れていない。
+// このために fmgen 本体 (.h/.cpp) には手を入れていない。
 #include "fmgen/types.h"
 #include "fmgen/fmgen.h"
 #include "fmgen/opna.h"
@@ -58,6 +58,7 @@
 #include "fmgen/opm.h"
 #include "fmgen/psg.h"
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -122,13 +123,21 @@ enum class FmGenChipType {
 
 
 // =========================================================
-//  外部メモリアクセス種別 (FmGenEngine.h の FmMemoryType と対応)
+//  チップから見えるメモリと、そこにつないだデバイスの種類
+//  番号は FmGenEngine.h の FmMemoryType / FmMemoryAccess と同じ (FmGenEngine.cpp の
+//  static_assert で照合する)。
 // =========================================================
-enum class FmGenAccessClass {
-    IO      = 0,
-    ADPCM_A = 1,   // OPNB の ADPCM-A ROM
-    ADPCM_B = 2,   // OPNA/OPNB の ADPCM-B RAM/ROM
-    PCM     = 3,   // (fmgen では未使用)
+enum class ChipMemoryType : uint32_t {
+    ADPCM_A         = 1,  // OPNA: リズムの内蔵 ROM の内容 (fmgen は読まない) / OPNB/OPNBB: ADPCM-A
+    ADPCM_B         = 2,  // OPNB/OPNBB: ADPCM-B / OPNA: RAM モードのメモリ
+    PCM             = 3,  // このエンジンのチップは持たない
+    ADPCM_B_ROMMODE = 4,  // OPNA: ROM モードのメモリ
+};
+constexpr uint32_t kChipMemoryTypeEnd = 5;  // 0 は欠番
+
+enum class ChipMemoryAccess : uint32_t {
+    ROM = 0,  // チップからの書き込みは捨てる
+    RAM = 1,  // ブロックをその場で読み書きする
 };
 
 // =========================================================
@@ -195,6 +204,119 @@ namespace fmgen_detail {
 }
 
 // =========================================================
+//  ADPCM の外部メモリ
+//  ChipMemoryType ごとに、ブロックを番地の範囲に割り当てる。fmgen の ADPCM の
+//  メモリアクセスはすべてここを通る (OPNABase::SetADPCMMemory)。
+//  割り当ての無い番地を読むと 0、書き込みは捨てる。
+//  割り当ての変更はスレッドセーフではない (生成を始める前に済ませること)。
+// =========================================================
+namespace fmgen_detail {
+    class AdpcmMemoryMap final : public FM::ADPCMMemory {
+    public:
+        uint8 Read(Space space, uint addr) override {
+            if (const Block* b = find(space, addr)) return b->read[addr - b->base];
+            return 0;
+        }
+
+        void Write(Space space, uint addr, uint8 data) override {
+            if (const Block* b = find(space, addr))
+                if (b->write) b->write[addr - b->base] = data;
+        }
+
+        // [base, base + size) に data を割り当てる。RAM ならチップの書き込みを data に
+        // 入れる。size が 0、範囲が 2^32 を越える、既存の割り当てと重なるなら false
+        bool map(ChipMemoryType type, uint32_t base, uint8_t* data, uint32_t size,
+                 ChipMemoryAccess access) {
+            auto* s = space(type);
+            if (!s || !data || !validRange(base, size)) return false;
+            for (const Block& b : *s)
+                if (overlaps(b, base, size)) return false;
+            s->push_back({ base, size, data,
+                           access == ChipMemoryAccess::RAM ? data : nullptr, nullptr });
+            return true;
+        }
+
+        // [base, base + size) と重なる割り当てをすべて外す。size が 0、範囲が
+        // 2^32 を越えるなら false
+        bool unmap(ChipMemoryType type, uint32_t base, uint32_t size) {
+            auto* s = space(type);
+            if (!s || !validRange(base, size)) return false;
+            s->erase(std::remove_if(s->begin(), s->end(),
+                                    [&](const Block& b) { return overlaps(b, base, size); }),
+                     s->end());
+            return true;
+        }
+
+        // type の割り当てを [0, size) の data だけにする。copy なら data を写した
+        // バッファを割り当て、チップの書き込みはそこに入る。copy でなければ data を
+        // 参照し、チップの書き込みは捨てる
+        void set(ChipMemoryType type, const uint8_t* data, uint32_t size, bool copy) {
+            auto* s = space(type);
+            if (!s) return;
+            Block b{ 0, size, data, nullptr, nullptr };
+            if (copy) {
+                b.owned.reset(new uint8_t[size]);
+                std::memcpy(b.owned.get(), data, size);
+                b.read = b.write = b.owned.get();
+            }
+            std::vector<Block> next;
+            next.push_back(std::move(b));
+            s->swap(next);
+        }
+
+        // 割り当てたブロックの大きさの合計
+        uint32_t size(ChipMemoryType type) const {
+            const auto* s = space(type);
+            if (!s) return 0;
+            uint64_t total = 0;
+            for (const Block& b : *s) total += b.size;
+            return static_cast<uint32_t>((std::min)(total, uint64_t{UINT32_MAX}));
+        }
+
+    private:
+        struct Block {
+            uint32_t                   base;
+            uint32_t                   size;
+            const uint8_t*             read;
+            uint8_t*                   write;  // ROM なら nullptr
+            std::unique_ptr<uint8_t[]> owned;  // set() で写したもの
+        };
+
+        static bool validRange(uint32_t base, uint32_t size) {
+            return size > 0 && uint64_t{base} + size <= (uint64_t{1} << 32);
+        }
+        static bool overlaps(const Block& b, uint32_t base, uint32_t size) {
+            return uint64_t{base} < uint64_t{b.base} + b.size &&
+                   uint64_t{b.base} < uint64_t{base} + size;
+        }
+
+        std::vector<Block>* space(ChipMemoryType type) {
+            const auto i = static_cast<uint32_t>(type);
+            return (i >= 1 && i < kChipMemoryTypeEnd) ? &m_spaces[i - 1] : nullptr;
+        }
+        const std::vector<Block>* space(ChipMemoryType type) const {
+            const auto i = static_cast<uint32_t>(type);
+            return (i >= 1 && i < kChipMemoryTypeEnd) ? &m_spaces[i - 1] : nullptr;
+        }
+
+        const Block* find(Space s, uint addr) const {
+            ChipMemoryType type;
+            switch (s) {
+                case spaceA:    type = ChipMemoryType::ADPCM_A;         break;
+                case spaceB:    type = ChipMemoryType::ADPCM_B;         break;
+                case spaceBROM: type = ChipMemoryType::ADPCM_B_ROMMODE; break;
+                default:        return nullptr;
+            }
+            for (const Block& b : *space(type))
+                if (addr >= b.base && addr - b.base < b.size) return &b;
+            return nullptr;
+        }
+
+        std::array<std::vector<Block>, kChipMemoryTypeEnd - 1> m_spaces;
+    };
+}
+
+// =========================================================
 //  FmGenChip インターフェース
 //  YMEngine src/FmChip.h の FmChip クラスに合わせている。
 // =========================================================
@@ -213,11 +335,17 @@ public:
     virtual uint32_t    clock() const = 0;
     virtual bool        hasPart(ChipPart /*part*/) const { return false; }
 
-    // 外部メモリ設定 (OPNA: ADPCM_B のみ / OPNB: ADPCM_A, ADPCM_B)
-    // data の寿命は呼び出し元 (FmEngineApi 経由の利用者) が管理する。
-    virtual void        setMemory(FmGenAccessClass /*access_type*/,
+    // 外部メモリ。挙動は fmgen_detail::AdpcmMemoryMap の map / unmap / set / size を
+    // 参照。hasMemory が false の種別では、mapMemory / unmapMemory は false を返し、
+    // setMemory は何もしない
+    virtual bool        hasMemory(ChipMemoryType /*type*/) const { return false; }
+    virtual bool        mapMemory(ChipMemoryType /*type*/, uint32_t /*base*/, uint8_t* /*data*/,
+                                  uint32_t /*size*/, ChipMemoryAccess /*access*/) { return false; }
+    virtual bool        unmapMemory(ChipMemoryType /*type*/, uint32_t /*base*/,
+                                    uint32_t /*size*/) { return false; }
+    virtual void        setMemory(ChipMemoryType /*type*/,
                                   const uint8_t* /*data*/, uint32_t /*size*/) {}
-    virtual uint32_t    memorySize(FmGenAccessClass /*access_type*/) const { return 0; }
+    virtual uint32_t    memorySize(ChipMemoryType /*type*/) const { return 0; }
 
     // OPNA のリズムサンプル (2608_BD.WAV 等) を読み込む。
     // OPNA 以外では何もしない。
@@ -272,14 +400,21 @@ namespace fmgen_detail {
 // =========================================================
 template<typename ChipImpl, FmGenChipType TType>
 class OpnFamilyChip final : public FmGenChip {
+    static constexpr bool kAdpcm         = TType != FmGenChipType::OPN;
+    static constexpr bool kAdpcmBRomMode = TType == FmGenChipType::OPNA;
+
 public:
     explicit OpnFamilyChip(uint32_t clock, uint32_t target_rate)
         : m_clock(clock), m_fm_rate(TType, clock)
     {
         if (!initImpl(target_rate))
             throw std::runtime_error(std::string("fmgen: Init failed for ") + name());
-        m_target_rate = target_rate;
+        if constexpr (kAdpcm) m_chip.SetADPCMMemory(&m_mem);
     }
+
+    // m_chip が m_mem を指すので写せない
+    OpnFamilyChip(const OpnFamilyChip&) = delete;
+    OpnFamilyChip& operator=(const OpnFamilyChip&) = delete;
 
     void write(uint32_t port, uint8_t reg, uint8_t value) override {
         const uint32_t addr = (port != 0) ? (static_cast<uint32_t>(reg) + 0x100u)
@@ -300,20 +435,41 @@ public:
 
     void setTargetRate(uint32_t target_rate) override {
         m_chip.SetRate(m_clock, target_rate, false);
-        m_target_rate = target_rate;
     }
 
     bool hasPart(ChipPart part) const override {
         return part == ChipPart::OPN_FM || part == ChipPart::OPN_SSG;
     }
 
-    void setMemory(FmGenAccessClass access_type,
-                   const uint8_t* data, uint32_t size) override {
-        setMemoryImpl(access_type, data, size);
+    bool hasMemory(ChipMemoryType type) const override {
+        switch (type) {
+            case ChipMemoryType::ADPCM_A:
+            case ChipMemoryType::ADPCM_B:         return kAdpcm;
+            case ChipMemoryType::ADPCM_B_ROMMODE: return kAdpcmBRomMode;
+            case ChipMemoryType::PCM:             return false;
+        }
+        return false;
     }
 
-    uint32_t memorySize(FmGenAccessClass access_type) const override {
-        return memorySizeImpl(access_type);
+    bool mapMemory(ChipMemoryType type, uint32_t base, uint8_t* data,
+                   uint32_t size, ChipMemoryAccess access) override {
+        return hasMemory(type) && m_mem.map(type, base, data, size, access);
+    }
+
+    bool unmapMemory(ChipMemoryType type, uint32_t base, uint32_t size) override {
+        return hasMemory(type) && m_mem.unmap(type, base, size);
+    }
+
+    // OPNA の ADPCM-B はレジスタ経由で書き込まれる RAM だが、data は書き込める
+    // メモリとは限らないので写す。OPNB/OPNBB はメモリに書き込まないので参照する
+    void setMemory(ChipMemoryType type, const uint8_t* data, uint32_t size) override {
+        if (hasMemory(type))
+            m_mem.set(type, data, size,
+                      TType == FmGenChipType::OPNA && type == ChipMemoryType::ADPCM_B);
+    }
+
+    uint32_t memorySize(ChipMemoryType type) const override {
+        return m_mem.size(type);
     }
 
     bool loadRhythmSamples(const char* dir_path) override {
@@ -328,22 +484,14 @@ public:
 private:
     // ---- チップ種別ごとの特殊化ポイント ----
     bool initImpl(uint32_t target_rate);
-    void setMemoryImpl(FmGenAccessClass access_type, const uint8_t* data, uint32_t size);
-    uint32_t memorySizeImpl(FmGenAccessClass access_type) const;
     bool loadRhythmSamplesImpl(const char* dir_path);
 
+    fmgen_detail::AdpcmMemoryMap m_mem;  // m_chip が指すので、m_chip より先に作り後に壊す
     ChipImpl              m_chip;
     uint32_t               m_clock;
-    uint32_t               m_target_rate = 0;
     fmgen_detail::FmRate   m_fm_rate;
     std::vector<FM::Sample> m_work;      // FM (ADPCM・リズムを含む)
     std::vector<FM::Sample> m_work_ssg;
-
-    // OPNB: setMemory で受け取ったポインタ/サイズを保持
-    // (fmgen::OPNB::Init は ROM ポインタを直接保持するだけだが、
-    //  Init 自体が一度しか呼べないため SetMemory のたびに作り直す)
-    const uint8_t* m_adpcmAData = nullptr; uint32_t m_adpcmASize = 0;
-    const uint8_t* m_adpcmBData = nullptr; uint32_t m_adpcmBSize = 0;
 };
 
 // ---------------------------------------------------------
@@ -361,12 +509,6 @@ template<>
 inline bool OpnFamilyChip<FM::OPN, FmGenChipType::OPN>::initImpl(uint32_t target_rate) {
     return m_chip.Init(m_clock, target_rate, false, nullptr);
 }
-template<>
-inline void OpnFamilyChip<FM::OPN, FmGenChipType::OPN>::setMemoryImpl(
-    FmGenAccessClass, const uint8_t*, uint32_t) {}
-template<>
-inline uint32_t OpnFamilyChip<FM::OPN, FmGenChipType::OPN>::memorySizeImpl(
-    FmGenAccessClass) const { return 0; }
 template<>
 inline bool OpnFamilyChip<FM::OPN, FmGenChipType::OPN>::loadRhythmSamplesImpl(
     const char*) { return true; }
@@ -390,26 +532,6 @@ inline bool OpnFamilyChip<FM::OPNA, FmGenChipType::OPNA>::initImpl(uint32_t targ
     return true;
 }
 template<>
-inline void OpnFamilyChip<FM::OPNA, FmGenChipType::OPNA>::setMemoryImpl(
-    FmGenAccessClass access_type, const uint8_t* data, uint32_t size) {
-    if (access_type != FmGenAccessClass::ADPCM_B) return;
-    // OPNA::GetADPCMBuffer() は内部 256KB(0x40000) バッファへの
-    // ポインタを返す。外部 ROM/RAM 内容をそのバッファへコピーする。
-    uint8_t* buf = m_chip.GetADPCMBuffer();
-    if (!buf) return;
-    const uint32_t copySize = std::min<uint32_t>(size, 0x40000u);
-    std::memcpy(buf, data, copySize);
-    if (copySize < 0x40000u)
-        std::memset(buf + copySize, 0, 0x40000u - copySize);
-    m_adpcmBData = data;
-    m_adpcmBSize = size;
-}
-template<>
-inline uint32_t OpnFamilyChip<FM::OPNA, FmGenChipType::OPNA>::memorySizeImpl(
-    FmGenAccessClass access_type) const {
-    return (access_type == FmGenAccessClass::ADPCM_B) ? m_adpcmBSize : 0;
-}
-template<>
 inline bool OpnFamilyChip<FM::OPNA, FmGenChipType::OPNA>::loadRhythmSamplesImpl(
     const char* dir_path) {
     // 再ロード用。通常は initImpl が自動ロードするため外部から呼ぶ必要はない。
@@ -419,38 +541,14 @@ inline bool OpnFamilyChip<FM::OPNA, FmGenChipType::OPNA>::loadRhythmSamplesImpl(
 // ---------------------------------------------------------
 //  OPNB: Init(clock, rate, ipflag=false,
 //              adpcma, adpcma_size, adpcmb, adpcmb_size)
-//  ROM ポインタを直接 Init に渡す設計のため、setMemory が呼ばれるまでは
-//  ヌル/サイズ0で初期化しておき、setMemory 時にチップを再構築する。
-//  (fmgen は SetMemory に相当する後挿し API を持たないため)
+//  ADPCM-A/B のメモリは m_mem から読むので、バッファは渡さない。
+//  fmgen は ADPCM-B の番地のマスクを adpcmb_size から決める (2 の冪に切り上げる)。
+//  開始・終了番地のレジスタで表せる範囲 (16MB) 全体を番地にするため、その大きさを
+//  渡す。
 // ---------------------------------------------------------
 template<>
 inline bool OpnFamilyChip<FM::OPNB, FmGenChipType::OPNB>::initImpl(uint32_t target_rate) {
-    return m_chip.Init(m_clock, target_rate, false, nullptr, 0, nullptr, 0);
-}
-template<>
-inline void OpnFamilyChip<FM::OPNB, FmGenChipType::OPNB>::setMemoryImpl(
-    FmGenAccessClass access_type, const uint8_t* data, uint32_t size) {
-    if (access_type == FmGenAccessClass::ADPCM_A) {
-        m_adpcmAData = data; m_adpcmASize = size;
-    } else if (access_type == FmGenAccessClass::ADPCM_B) {
-        m_adpcmBData = data; m_adpcmBSize = size;
-    } else {
-        return;
-    }
-    // OPNB::Init はレジスタ・チャンネル状態を Reset() するため、
-    // 既存の発音状態は失われる (内部で Reset() が呼ばれる)。
-    // YMEngine の FmEngine_SetMemory と同じ運用制約
-    // (ストリーム開始前、AddChip 直後に呼ぶこと) であれば問題にならない。
-    m_chip.Init(m_clock, m_target_rate, false,
-                const_cast<uint8_t*>(m_adpcmAData), static_cast<int>(m_adpcmASize),
-                const_cast<uint8_t*>(m_adpcmBData), static_cast<int>(m_adpcmBSize));
-}
-template<>
-inline uint32_t OpnFamilyChip<FM::OPNB, FmGenChipType::OPNB>::memorySizeImpl(
-    FmGenAccessClass access_type) const {
-    if (access_type == FmGenAccessClass::ADPCM_A) return m_adpcmASize;
-    if (access_type == FmGenAccessClass::ADPCM_B) return m_adpcmBSize;
-    return 0;
+    return m_chip.Init(m_clock, target_rate, false, nullptr, 0, nullptr, 1 << 24);
 }
 template<>
 inline bool OpnFamilyChip<FM::OPNB, FmGenChipType::OPNB>::loadRhythmSamplesImpl(
@@ -463,7 +561,7 @@ using FmGenOpnbChip = OpnFamilyChip<FM::OPNB, FmGenChipType::OPNB>;
 // =========================================================
 //  OPNBB (YM2610B) ラッパー
 //  FM::OPNBB は FM::OPNB の派生クラスのため、OpnFamilyChip テンプレートを
-//  そのまま使える。ADPCM-A/B の setMemory も OPNB と同一の実装を流用する。
+//  そのまま使える。
 // =========================================================
 
 // name() 特殊化
@@ -472,34 +570,10 @@ OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>::name() const {
     return "OPNBB (YM2610B) [fmgen]";
 }
 
-// initImpl 特殊化 (OPNB と同じ引数列)
+// initImpl 特殊化 (OPNB と同じ)
 template<>
 inline bool OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>::initImpl(uint32_t target_rate) {
-    return m_chip.Init(m_clock, target_rate, false, nullptr, 0, nullptr, 0);
-}
-
-// setMemoryImpl / memorySizeImpl: OPNB と完全に同じ実装
-template<>
-inline void OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>::setMemoryImpl(
-    FmGenAccessClass access_type, const uint8_t* data, uint32_t size) {
-    if (access_type == FmGenAccessClass::ADPCM_A) {
-        m_adpcmAData = data; m_adpcmASize = size;
-    } else if (access_type == FmGenAccessClass::ADPCM_B) {
-        m_adpcmBData = data; m_adpcmBSize = size;
-    } else {
-        return;
-    }
-    m_chip.Init(m_clock, m_target_rate, false,
-                const_cast<uint8_t*>(m_adpcmAData), static_cast<int>(m_adpcmASize),
-                const_cast<uint8_t*>(m_adpcmBData), static_cast<int>(m_adpcmBSize));
-}
-
-template<>
-inline uint32_t OpnFamilyChip<FM::OPNBB, FmGenChipType::OPNBB>::memorySizeImpl(
-    FmGenAccessClass access_type) const {
-    if (access_type == FmGenAccessClass::ADPCM_A) return m_adpcmASize;
-    if (access_type == FmGenAccessClass::ADPCM_B) return m_adpcmBSize;
-    return 0;
+    return m_chip.Init(m_clock, target_rate, false, nullptr, 0, nullptr, 1 << 24);
 }
 
 template<>
