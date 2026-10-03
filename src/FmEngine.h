@@ -123,70 +123,73 @@ public:
         return m_gains[chip_id]->gain_r.load(std::memory_order_relaxed);
     }
 
+    // チップが持つ部位。部位は名前の文字列で指定する (大文字小文字を区別する)。
+    // 部位を持たないチップと未知の chip_id は 0 / nullptr。範囲外の index も nullptr。
+    uint32_t partCount(uint32_t chip_id) const {
+        return chip_id < m_chips.size() ? m_chips[chip_id]->parts().count : 0;
+    }
+    const char* partName(uint32_t chip_id, uint32_t index) const {
+        return chip_id < m_chips.size() ? m_chips[chip_id]->parts().name(index) : nullptr;
+    }
+
     // 部位ごとのゲイン (任意スレッドから呼べる)。実際に掛かるのは
     // setGain() のゲイン × 部位のゲイン。既定値は 1.0。
-    // 未知の chip_id、範囲外の part、チップが持たない部位なら false。
-    bool setPartGain(uint32_t chip_id, ChipPart part, float gain_l, float gain_r) {
-        if (!hasPart(chip_id, part)) return false;
-        ChipGain& g = (*m_part_gains[chip_id])[static_cast<size_t>(part)];
+    // 未知の chip_id、チップが持たない部位の名前、nullptr なら false。
+    bool setPartGain(uint32_t chip_id, const char* part, float gain_l, float gain_r) {
+        ChipPart p;
+        if (!findPart(chip_id, part, p)) return false;
+        ChipGain& g = (*m_part_gains[chip_id])[static_cast<size_t>(p)];
         g.gain_l.store(gain_l, std::memory_order_relaxed);
         g.gain_r.store(gain_r, std::memory_order_relaxed);
         return true;
     }
 
-    bool getPartGain(uint32_t chip_id, ChipPart part, float& out_l, float& out_r) const {
-        if (!hasPart(chip_id, part)) return false;
-        const ChipGain& g = (*m_part_gains[chip_id])[static_cast<size_t>(part)];
+    bool getPartGain(uint32_t chip_id, const char* part, float& out_l, float& out_r) const {
+        ChipPart p;
+        if (!findPart(chip_id, part, p)) return false;
+        const ChipGain& g = (*m_part_gains[chip_id])[static_cast<size_t>(p)];
         out_l = g.gain_l.load(std::memory_order_relaxed);
         out_r = g.gain_r.load(std::memory_order_relaxed);
         return true;
     }
 
-    // チップが持つ部位のビットマスク (bit n = ChipPart の n 番)。
-    // 部位を持たないチップは 0。未知の chip_id なら false。
-    bool getPartMask(uint32_t chip_id, uint32_t& out_mask) const {
-        static_assert(kChipPartCount <= 32, "part mask is uint32_t");
-        if (chip_id >= m_chips.size()) return false;
-        uint32_t mask = 0;
-        for (uint32_t p = 0; p < kChipPartCount; ++p)
-            if (m_chips[chip_id]->hasPart(static_cast<ChipPart>(p))) mask |= 1u << p;
-        out_mask = mask;
-        return true;
+    // チップが持つ外部メモリ。外部メモリは名前の文字列で指定する (大文字小文字を
+    // 区別する)。持たないチップと未知の chip_id は 0 / nullptr。範囲外の index も
+    // nullptr。
+    uint32_t memoryCount(uint32_t chip_id) const {
+        return chip_id < m_chips.size() ? m_chips[chip_id]->memories().count : 0;
+    }
+    const char* memoryName(uint32_t chip_id, uint32_t index) const {
+        return chip_id < m_chips.size() ? m_chips[chip_id]->memories().name(index) : nullptr;
     }
 
-    // 外部メモリ。どれもオーディオスレッド起動前に呼ぶこと (スレッドセーフではない)。
-    // 参照する data は、割り当てを外すかエンジンを破棄するまで解放しないこと。
+    // 外部メモリの割り当て。どれもオーディオスレッド起動前に呼ぶこと (スレッド
+    // セーフではない)。参照する data は、割り当てを外すかエンジンを破棄するまで
+    // 解放しないこと。
     //
-    // mapMemory: C API の FmEngine_SetMemoryEx と同じ。type のメモリの
+    // mapMemory: C API の FmEngine_SetMemoryEx と同じ。memory のメモリの
     // [base, base + size) に data を割り当てる。data が nullptr なら、その範囲と
-    // 重なる割り当てをすべて外す。未知の chip_id、チップが持たない type、
-    // size が 0、範囲が 2^32 を越える、既存の割り当てと重なる、未知の access
-    // なら false。
-    bool mapMemory(uint32_t chip_id, ChipMemoryType type, uint32_t base,
+    // 重なる割り当てをすべて外す。未知の chip_id、チップが持たないメモリの名前、
+    // memory が nullptr、size が 0、範囲が 2^32 を越える、既存の割り当てと重なる、
+    // 未知の access なら false。
+    bool mapMemory(uint32_t chip_id, const char* memory, uint32_t base,
                    uint8_t* data, uint32_t size, ChipMemoryAccess access) {
-        if (chip_id >= m_chips.size() || !m_chips[chip_id]->hasMemory(type)) return false;
+        ChipMemoryType type;
+        if (!findMemory(chip_id, memory, type)) return false;
         if (!data) return m_chips[chip_id]->unmapMemory(type, base, size);
         if (access != ChipMemoryAccess::ROM && access != ChipMemoryAccess::RAM) return false;
         return m_chips[chip_id]->mapMemory(type, base, data, size, access);
     }
 
-    // C API の FmEngine_SetMemory。type の割り当てを [0, size) の data だけにする。
-    // チップが持たない type も受け付ける (受け付けるだけで、チップは読まない)。
-    // ADPCM_B_ROMMODE、範囲外の type、data が nullptr、size が 0、未知の chip_id
-    // なら false。
-    bool setMemory(uint32_t chip_id, ChipMemoryType type,
+    // C API の FmEngine_SetMemory。memory の割り当てを [0, size) の data だけにする。
+    // 未知の chip_id、チップが持たないメモリの名前、memory が nullptr、data が
+    // nullptr、size が 0 なら false。
+    bool setMemory(uint32_t chip_id, const char* memory,
                    const uint8_t* data, uint32_t size) {
-        if (chip_id >= m_chips.size() || !data || size == 0) return false;
-        if (type != ChipMemoryType::ADPCM_A && type != ChipMemoryType::ADPCM_B &&
-            type != ChipMemoryType::PCM) return false;
+        ChipMemoryType type;
+        if (!findMemory(chip_id, memory, type) || !data || size == 0) return false;
         m_chips[chip_id]->setMemory(type, data, size);
         return true;
-    }
-
-    // 割り当てたブロックの大きさの合計
-    uint32_t memorySize(uint32_t chip_id, ChipMemoryType type) const {
-        if (chip_id >= m_chips.size()) return 0;
-        return m_chips[chip_id]->memorySize(type);
     }
 
     // OPNA リズムサンプル(WAV)読み込み。OPNA 以外のチップでは何もせず true を返す。
@@ -263,10 +266,12 @@ private:
         return id;
     }
 
-    bool hasPart(uint32_t chip_id, ChipPart part) const {
-        return chip_id < m_chips.size()
-            && static_cast<uint32_t>(part) < kChipPartCount
-            && m_chips[chip_id]->hasPart(part);
+    bool findPart(uint32_t chip_id, const char* name, ChipPart& out) const {
+        return chip_id < m_chips.size() && m_chips[chip_id]->parts().find(name, out);
+    }
+
+    bool findMemory(uint32_t chip_id, const char* name, ChipMemoryType& out) const {
+        return chip_id < m_chips.size() && m_chips[chip_id]->memories().find(name, out);
     }
 
     static float softClip(float x) {

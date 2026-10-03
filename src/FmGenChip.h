@@ -110,7 +110,7 @@ namespace fmgen_detail {
 
 // =========================================================
 //  チップ種別列挙
-//  FmGenEngine.h では文字列で指定されるが、内部でこの列挙に変換して管理する。
+//  FmEngineApi.h では文字列で指定されるが、内部でこの列挙に変換して管理する。
 // =========================================================
 enum class FmGenChipType {
     OPN,    // YM2203
@@ -124,16 +124,17 @@ enum class FmGenChipType {
 
 // =========================================================
 //  チップから見えるメモリと、そこにつないだデバイスの種類
-//  番号は FmGenEngine.h の FmMemoryType / FmMemoryAccess と同じ (FmGenEngine.cpp の
-//  static_assert で照合する)。
+//  C API ではメモリを名前の文字列で指定する。どのチップがどの名前のメモリを
+//  持つかは、チップごとの表 (FmGenChip::memories) にある。
+//  ChipMemoryAccess の番号は FmEngineApi.h の FmMemoryAccess と同じ
+//  (FmGenEngine.cpp の static_assert で照合する)。
 // =========================================================
 enum class ChipMemoryType : uint32_t {
-    ADPCM_A         = 1,  // OPNA: リズムの内蔵 ROM の内容 (fmgen は読まない) / OPNB/OPNBB: ADPCM-A
-    ADPCM_B         = 2,  // OPNB/OPNBB: ADPCM-B / OPNA: RAM モードのメモリ
-    PCM             = 3,  // このエンジンのチップは持たない
-    ADPCM_B_ROMMODE = 4,  // OPNA: ROM モードのメモリ
+    ADPCM_A,          // OPNB/OPNBB: ADPCM-A
+    ADPCM_B,          // OPNB/OPNBB: ADPCM-B / OPNA: RAM モードのメモリ
+    ADPCM_B_ROMMODE,  // OPNA: ROM モードのメモリ
 };
-constexpr uint32_t kChipMemoryTypeEnd = 5;  // 0 は欠番
+constexpr uint32_t kChipMemoryTypeCount = 3;
 
 enum class ChipMemoryAccess : uint32_t {
     ROM = 0,  // チップからの書き込みは捨てる
@@ -142,15 +143,55 @@ enum class ChipMemoryAccess : uint32_t {
 
 // =========================================================
 //  出力の部位
-//  番号は FmGenEngine.h の FmPart と同じ (FmGenEngine.cpp の static_assert で
-//  照合する)。FmPart のうち、このエンジンのチップが持つ部位だけを置く。
-//  FmPart の残り (OPLL/OPL3/OPL4 の部位) は範囲外として拒否される。
+//  C API では部位を名前の文字列で指定する。どのチップがどの名前の部位を持つかは、
+//  チップごとの表 (FmGenChip::parts) にある。
 // =========================================================
 enum class ChipPart : uint32_t {
     OPN_FM  = 0,  // OPN/OPNA/OPNB/OPNBB: FM (ADPCM・リズムを含む)
     OPN_SSG = 1,  //                      SSG
 };
 constexpr uint32_t kChipPartCount = 2;
+
+// =========================================================
+//  名前の表
+//  部位と外部メモリの名前 (大文字小文字を区別する) と、内部の番号の対応。
+//  名前は FmEngineApi の仕様書の表のとおりにする。文字列はリテラルを指すので、
+//  エンジンを破棄したあとも有効。
+// =========================================================
+template<typename T>
+struct Named {
+    const char* name;
+    T           value;
+};
+
+template<typename T>
+struct NamedList {
+    const Named<T>* items = nullptr;
+    uint32_t        count = 0;
+
+    // 範囲外は nullptr
+    const char* name(uint32_t index) const {
+        return index < count ? items[index].name : nullptr;
+    }
+
+    // name が nullptr か、表に無ければ false
+    bool find(const char* name, T& out) const {
+        if (!name) return false;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (std::strcmp(items[i].name, name) == 0) {
+                out = items[i].value;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool contains(T value) const {
+        for (uint32_t i = 0; i < count; ++i)
+            if (items[i].value == value) return true;
+        return false;
+    }
+};
 
 // 部位ごとのゲイン。チップ全体のゲインは FmEngine が後から掛ける。
 struct PartGains {
@@ -264,15 +305,6 @@ namespace fmgen_detail {
             s->swap(next);
         }
 
-        // 割り当てたブロックの大きさの合計
-        uint32_t size(ChipMemoryType type) const {
-            const auto* s = space(type);
-            if (!s) return 0;
-            uint64_t total = 0;
-            for (const Block& b : *s) total += b.size;
-            return static_cast<uint32_t>((std::min)(total, uint64_t{UINT32_MAX}));
-        }
-
     private:
         struct Block {
             uint32_t                   base;
@@ -292,11 +324,11 @@ namespace fmgen_detail {
 
         std::vector<Block>* space(ChipMemoryType type) {
             const auto i = static_cast<uint32_t>(type);
-            return (i >= 1 && i < kChipMemoryTypeEnd) ? &m_spaces[i - 1] : nullptr;
+            return i < kChipMemoryTypeCount ? &m_spaces[i] : nullptr;
         }
         const std::vector<Block>* space(ChipMemoryType type) const {
             const auto i = static_cast<uint32_t>(type);
-            return (i >= 1 && i < kChipMemoryTypeEnd) ? &m_spaces[i - 1] : nullptr;
+            return i < kChipMemoryTypeCount ? &m_spaces[i] : nullptr;
         }
 
         const Block* find(Space s, uint addr) const {
@@ -312,7 +344,7 @@ namespace fmgen_detail {
             return nullptr;
         }
 
-        std::array<std::vector<Block>, kChipMemoryTypeEnd - 1> m_spaces;
+        std::array<std::vector<Block>, kChipMemoryTypeCount> m_spaces;
     };
 }
 
@@ -333,19 +365,21 @@ public:
     virtual FmGenChipType type() const = 0;
     virtual const char* name()  const = 0;
     virtual uint32_t    clock() const = 0;
-    virtual bool        hasPart(ChipPart /*part*/) const { return false; }
 
-    // 外部メモリ。挙動は fmgen_detail::AdpcmMemoryMap の map / unmap / set / size を
-    // 参照。hasMemory が false の種別では、mapMemory / unmapMemory は false を返し、
+    // チップが持つ部位と外部メモリ。持たないチップは空の表を返す。
+    // 同じチップには、いつも同じ順序で同じ名前を返すこと
+    virtual NamedList<ChipPart>       parts()    const { return {}; }
+    virtual NamedList<ChipMemoryType> memories() const { return {}; }
+
+    // 外部メモリ。挙動は fmgen_detail::AdpcmMemoryMap の map / unmap / set を参照。
+    // memories() に無い種別では、mapMemory / unmapMemory は false を返し、
     // setMemory は何もしない
-    virtual bool        hasMemory(ChipMemoryType /*type*/) const { return false; }
     virtual bool        mapMemory(ChipMemoryType /*type*/, uint32_t /*base*/, uint8_t* /*data*/,
                                   uint32_t /*size*/, ChipMemoryAccess /*access*/) { return false; }
     virtual bool        unmapMemory(ChipMemoryType /*type*/, uint32_t /*base*/,
                                     uint32_t /*size*/) { return false; }
     virtual void        setMemory(ChipMemoryType /*type*/,
                                   const uint8_t* /*data*/, uint32_t /*size*/) {}
-    virtual uint32_t    memorySize(ChipMemoryType /*type*/) const { return 0; }
 
     // OPNA のリズムサンプル (2608_BD.WAV 等) を読み込む。
     // OPNA 以外では何もしない。
@@ -400,8 +434,7 @@ namespace fmgen_detail {
 // =========================================================
 template<typename ChipImpl, FmGenChipType TType>
 class OpnFamilyChip final : public FmGenChip {
-    static constexpr bool kAdpcm         = TType != FmGenChipType::OPN;
-    static constexpr bool kAdpcmBRomMode = TType == FmGenChipType::OPNA;
+    static constexpr bool kAdpcm = TType != FmGenChipType::OPN;
 
 public:
     explicit OpnFamilyChip(uint32_t clock, uint32_t target_rate)
@@ -437,39 +470,50 @@ public:
         m_chip.SetRate(m_clock, target_rate, false);
     }
 
-    bool hasPart(ChipPart part) const override {
-        return part == ChipPart::OPN_FM || part == ChipPart::OPN_SSG;
+    NamedList<ChipPart> parts() const override {
+        static constexpr Named<ChipPart> kParts[] = {
+            { "FM",  ChipPart::OPN_FM  },
+            { "SSG", ChipPart::OPN_SSG },
+        };
+        return { kParts, 2 };
     }
 
-    bool hasMemory(ChipMemoryType type) const override {
-        switch (type) {
-            case ChipMemoryType::ADPCM_A:
-            case ChipMemoryType::ADPCM_B:         return kAdpcm;
-            case ChipMemoryType::ADPCM_B_ROMMODE: return kAdpcmBRomMode;
-            case ChipMemoryType::PCM:             return false;
+    NamedList<ChipMemoryType> memories() const override {
+        // OPNA のリズム音の内蔵 ROM ("RHYTHM") は持たない。fmgen の OPNA は
+        // リズムを WAV ファイルから読み、ROM の内容を使わないため
+        static constexpr Named<ChipMemoryType> kOpna[] = {
+            { "ADPCM_B",         ChipMemoryType::ADPCM_B         },
+            { "ADPCM_B_ROMMODE", ChipMemoryType::ADPCM_B_ROMMODE },
+        };
+        static constexpr Named<ChipMemoryType> kOpnb[] = {
+            { "ADPCM_A", ChipMemoryType::ADPCM_A },
+            { "ADPCM_B", ChipMemoryType::ADPCM_B },
+        };
+        switch (TType) {
+            case FmGenChipType::OPNA:  return { kOpna, 2 };
+            case FmGenChipType::OPNB:
+            case FmGenChipType::OPNBB: return { kOpnb, 2 };
+            default:                   return {};
         }
-        return false;
     }
 
     bool mapMemory(ChipMemoryType type, uint32_t base, uint8_t* data,
                    uint32_t size, ChipMemoryAccess access) override {
-        return hasMemory(type) && m_mem.map(type, base, data, size, access);
+        return memories().contains(type) && m_mem.map(type, base, data, size, access);
     }
 
     bool unmapMemory(ChipMemoryType type, uint32_t base, uint32_t size) override {
-        return hasMemory(type) && m_mem.unmap(type, base, size);
+        return memories().contains(type) && m_mem.unmap(type, base, size);
     }
 
-    // OPNA の ADPCM-B はレジスタ経由で書き込まれる RAM だが、data は書き込める
-    // メモリとは限らないので写す。OPNB/OPNBB はメモリに書き込まないので参照する
+    // OPNA の ADPCM-B (RAM モードのメモリ) はレジスタ経由で書き込まれる RAM だが、
+    // data は書き込めるメモリとは限らないので写す。OPNA の ROM モードのメモリは
+    // 参照し、チップの書き込みを捨てる (書き込ませるなら mapMemory で RAM を
+    // 割り当てる)。OPNB/OPNBB はメモリに書き込まないので参照する
     void setMemory(ChipMemoryType type, const uint8_t* data, uint32_t size) override {
-        if (hasMemory(type))
+        if (memories().contains(type))
             m_mem.set(type, data, size,
                       TType == FmGenChipType::OPNA && type == ChipMemoryType::ADPCM_B);
-    }
-
-    uint32_t memorySize(ChipMemoryType type) const override {
-        return m_mem.size(type);
     }
 
     bool loadRhythmSamples(const char* dir_path) override {

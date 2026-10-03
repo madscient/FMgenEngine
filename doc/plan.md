@@ -11,24 +11,38 @@ AI 向けの作業記録。セッションをまたいで、仕様の決定、�
 ## API の仕様の出どころ
 
 仕様の原本は FMEngineTest (https://github.com/madscient/FMEngineTest) の
-`docs/FmEngineApi.md`。決定の経緯は同じリポジトリの `docs/CHANGELOG.md` にある。
-FMEngineTest の `src/FmEngineApi.h` は初版のまま更新されていないので、仕様として
-読まない。
+`docs/FmEngineApi.md`、ヘッダの正本は同じリポジトリの `include/FmEngineApi.h`。
+決定の経緯と、エンジン側が直すべきことは `docs/CHANGELOG.md` にある。
 
-YMEngine (https://github.com/madscient/YMEngine) は参照実装。ヘッダ
-(`src/FmEngineApi.h`) の書き方と、仕様が定めない細部の振る舞いはこちらに合わせる。
-仕様書の改定が YMEngine より先に入ることがあるので、追従するときは必ず仕様書から
-見る。
+このリポジトリの `src/FmEngineApi.h` は正本の写しで、直接編集しない。
+FmGenEngine 固有の振る舞いは README に書く。
 
-追従の状況 (FMEngineTest `origin/main` の `docs/FmEngineApi.md` で見る):
+YMEngine (https://github.com/madscient/YMEngine) は参照実装。仕様が定めない細部の
+振る舞いは、YMEngine がその版に追従していれば合わせる。仕様書の改定が YMEngine より
+先に入ることがあるので、追従するときは必ず仕様書から見る。
+
+追従の状況 (FMEngineTest `origin/main` で見る):
 
 | 仕様書のコミット | 内容 | FmGenEngine |
 |---|---|---|
 | `e39b206` | 部位ごとのゲイン | 対応済み |
 | `e002890`、`c0589c1` | 外部メモリの ROM/RAM (`FmEngine_SetMemoryEx` は任意) | 対応済み (`SetMemoryEx` をエクスポートする) |
 | `866f4a3` | `AddChip` の clock=0 を廃止 | 対応済み |
+| `20c4923` | 部位と外部メモリを名前で指定する。ヘッダの正本を FMEngineTest に置く | 対応済み (任意の 8 関数をすべてエクスポートする) |
 
-次に追従するときは、`866f4a3` から先の `docs/FmEngineApi.md` の差分を見る。
+次に追従するときは、`20c4923` から先の `docs/FmEngineApi.md` と
+`include/FmEngineApi.h` の差分を見る。
+
+ヘッダの写しを新しい版に差し替える手順 (FMEngineTest を隣に clone してある場合):
+
+```sh
+git -C ../FMEngineTest show <コミット>:include/FmEngineApi.h > src/FmEngineApi.h
+sed 's/\r$//' src/FmEngineApi.h | sha256sum   # cmake/CheckApiHeader.cmake の FMGEN_API_HEADER_SHA256 に書く
+cmake -P cmake/CheckApiHeader.cmake           # 写しのハッシュと、.def との一致を確かめる
+```
+
+今の写しは `20c4923` のもの。blob のハッシュが正本と同じ (`206f723`) であることを
+`git hash-object src/FmEngineApi.h` で確かめた (**確認済み**)。
 
 ## 回帰テスト (`_test/`)
 
@@ -37,7 +51,7 @@ CMake には組み込んでいない。fmgen のソースと `src/FmGenEngine.cp
 
 | ファイル | 見ていること |
 |---|---|
-| `api_test.cpp` | `AddChip` が clock=0 を拒否すること。部位ごとのゲインの受け付け・既定値・読み戻し・`GetPartMask`・不正な引数の拒否 (accept)。`FM_PART_OPN_FM` が FM と ADPCM に、`FM_PART_OPN_SSG` が SSG に掛かること、L/R が独立なこと、チップのゲインとの積になること (route)。既定のゲインで fmgen の `Mix` と全サンプル一致すること (default)。`GetNativeRate` の値と、その値が fmgen の実際のレートであることを FM と SSG の音程から確かめる。単体 SSG と OPN 系の SSG 部のトーン周波数が TP から正しく決まること (native)。`SetMemory` の拒否・`GetMemorySize`・エンジンが data に書き込まないこと (memory)。`SetMemoryEx` の受け付けと範囲の検査、`SetMemory` が割り当てを置き換えること (memex)。OPNA の ADPCM-B が ROM/RAM 選択ビットの側のメモリだけを読むこと、ROM モードの番地の単位と並び、ブロックを分けても同じ出力になること (play)。転送が RAM のブロックにその場で入り ROM には入らないこと、入る時点、ROM モードと x8 の転送の行き先、RAM のブロックを複製しないこと (store)。割り当ての無い番地で 0 を読み書き込みを捨てること、OPNB が落ちないこと (unmapped) |
+| `api_test.cpp` | `AddChip` が clock=0 を拒否すること。`GetPartCount` / `GetPartName` が列挙する部位の名前、列挙した名前の受け付け・既定値・読み戻し、チップが持たない名前や不正な引数の拒否 (accept)。部位 `FM` が FM と ADPCM に、`SSG` が SSG に掛かること、L/R が独立なこと、チップのゲインとの積になること (route)。既定のゲインで fmgen の `Mix` と全サンプル一致すること (default)。`GetNativeRate` の値と、その値が fmgen の実際のレートであることを FM と SSG の音程から確かめる。単体 SSG と OPN 系の SSG 部のトーン周波数が TP から正しく決まること (native)。`GetMemoryCount` / `GetMemoryName` が列挙する外部メモリの名前 (OPNA は `RHYTHM` を持たない)、列挙した名前がどれも `SetMemory` に渡せること、持たない名前や不正な引数の拒否、エンジンが data に書き込まないこと (memory)。`SetMemoryEx` が受け付ける名前と範囲の検査、`SetMemory` が割り当てを置き換えること (memex)。OPNA の ADPCM-B が ROM/RAM 選択ビットの側のメモリだけを読むこと、`SetMemory` の `ADPCM_B_ROMMODE` が ROM モードで鳴りチップの書き込みを捨てること、ROM モードの番地の単位と並び、ブロックを分けても同じ出力になること (play)。転送が RAM のブロックにその場で入り ROM には入らないこと、入る時点、ROM モードと x8 の転送の行き先、RAM のブロックを複製しないこと (store)。割り当ての無い番地で 0 を読み書き込みを捨てること、OPNB が落ちないこと (unmapped) |
 
 Windows (vcvars64.bat を通した cmd、リポジトリ直下で):
 
@@ -52,7 +66,7 @@ Windows 以外ではビルドできない。**推測**: fmgen の `headers.h` �
 include しているため。試していない。
 
 走らせる場面: `FmGenChip.h` / `FmGenExtChip.h` / `FmEngine.h` / `FmGenEngine.cpp`
-の部位・ゲイン・レート・クロック・外部メモリまわり、fmgen の `Mix` / `MixSplit` /
+の部位・ゲイン・レート・クロック・外部メモリまわり (名前の表を含む)、fmgen の `Mix` / `MixSplit` /
 `SetPrescaler` / ADPCM のメモリアクセス (`ReadRAM` / `WriteRAM` / `ReadRAMN` /
 `ADPCMAMix`、差し替え口) を変えたとき。
 
@@ -62,6 +76,124 @@ fmgen に未初期化のまま使われるメンバがあり (下の「気づい
 ため。fmgen を直した場合もこの差し替えは残してよい。
 
 ## 経緯
+
+### 2026-10-03 部位と外部メモリを名前で指定する。ヘッダを正本の写しにする
+
+仕様書 (FMEngineTest `20c4923`) への追従。仕様の要点:
+
+- 部位と外部メモリは名前の文字列で指定し、チップが持つものは
+  `FmEngine_GetPartCount` / `GetPartName`、`FmEngine_GetMemoryCount` /
+  `GetMemoryName` で列挙する。`FmPart`、`FmMemoryType`、`FmEngine_GetPartMask`、
+  `FmEngine_GetMemorySize` は廃止
+- `FmEngine_SetPartGain` / `GetPartGain` / `SetMemory` / `SetMemoryEx` は関数名を
+  変えずに、第 3 引数が名前になった
+- 必須は 12 関数。部位の 4 関数、外部メモリの 3 関数、`SetMemoryEx` は任意
+- ヘッダの正本は FMEngineTest の `include/FmEngineApi.h`
+
+追従を始めた時点で、この版に追従したエンジンは無かった (YMEngine、DSAemuEngine、
+EPSGemuEngine、NukedEngine の `origin` を fetch して確認)。仕様が定めない細部は、
+合わせる先が無いのでここで決めた。
+
+#### 利用者と決めたこと
+
+- **OPNA の `RHYTHM` (リズム音の内蔵 ROM) は列挙しない**。fmgen はリズムを WAV
+  から読み、ROM を使わない。`SetMemory` に `RHYTHM` を渡すと `FM_ERR_INVALID_ARG`。
+  見送った案: 列挙して受け付けるが読まない (これまで OPNA の ADPCM_A を受け付けて
+  無視していたのと同じ扱い。アプリからは ROM が要るように見える)、ROM を
+  デコードしてリズムを鳴らす (機能追加。追従とは別に行う)。
+  前提: fmgen の OPNA のリズムが WAV のままであること。
+  やり直しの値段: `FmGenChip.h` の名前の表の1行、テストの `expectedMemories`、README
+- **ヘッダは `FmGenEngine.h` をやめ、正本と同一の `FmEngineApi.h` だけにする**。
+  見送った案: `FmGenEngine.h` の名前のまま中身を写しにする、`include/FmEngineApi.h`
+  に写しを置いて `FmGenEngine.h` はそれを include するだけにする。
+  外から見える変化: アプリケーションの `#include` の名前が変わる
+
+#### 相談せずに決めたこと
+
+- ヘッダの置き場所は `src/` のまま (install 先は今までどおり `include`)。
+  やり直しの値段: ファイルの移動と、`CMakeLists.txt`・`cmake/CheckApiHeader.cmake`・
+  テストのビルド手順のパス
+- 部位は OPN / OPNA / OPNB / OPNBB の `FM` と `SSG` (既定値 1.0。仕様書の表のとおり)。
+  並ぶ順序は `FM`、`SSG` (仕様は順序を定めない)
+- 外部メモリは、OPNA が `ADPCM_B`、`ADPCM_B_ROMMODE`、OPNB / OPNBB が `ADPCM_A`、
+  `ADPCM_B` (名前は仕様書の表のとおり。並ぶ順序はこのとおり)
+- `SetMemory` に `ADPCM_B_ROMMODE` を渡せる (仕様: 列挙した名前はどれも
+  `SetMemory` に渡せる)。data を参照し、チップの書き込みは捨てる。
+  見送った案: OPNA の `ADPCM_B` と同じく写す。理由: ROM モードのメモリに渡すのは
+  ROM のイメージが普通で、書き込ませたいなら `SetMemoryEx` で RAM を割り当てられる。
+  やり直しの値段: `OpnFamilyChip::setMemory` の1行、テストの1項目、README
+- チップが持たないメモリの名前は `FM_ERR_INVALID_ARG` (仕様が定めた)。今までは
+  `FM_OK` を返して無視していた
+- `SetMemory` の data が NULL、size が 0 は、今までどおり `FM_ERR_INVALID_ARG`
+  (仕様は今回も定めていない)
+- 任意の 8 関数をすべてエクスポートする (今までも部位ゲインと `SetMemoryEx` を
+  エクスポートしていた)
+
+#### 外から見える変化
+
+- 部位と外部メモリを番号で指定する形でビルドしたアプリケーションは、この DLL と
+  組み合わせられない (DLL が番号をポインタとして読む)。仕様書の CHANGELOG の前提の
+  とおり。README の概要に書いた
+- `FmEngine_GetPartMask` と `FmEngine_GetMemorySize` が無くなった
+- OPNA にリズムの ROM (今までの `FM_MEM_ADPCM_A`) を渡すと拒否する
+- ヘッダの名前が `FmEngineApi.h` になった
+- 音の出力は変わらない (下の確認)
+
+#### 実装
+
+- `src/FmEngineApi.h`: 正本の写し (`git mv` で `FmGenEngine.h` から改名)。
+  FmGenEngine 固有の説明 (SSG のレート、`SetMemory` が写すか参照するか) は README に
+  ある
+- `FmGenChip.h`: 名前の表 `NamedList` と、チップごとの `parts()` / `memories()`。
+  `ChipMemoryType` は C API の番号から切り離し (0 始まり、`PCM` を削除)、
+  `hasPart` / `hasMemory` / `memorySize` と `AdpcmMemoryMap::size` を削除した
+- `FmEngine.h` / `FmGenEngine.cpp`: 部位と外部メモリを名前で引く。`getPartMask` /
+  `memorySize` を削除し、`FmPart` / `FmMemoryType` との番号の照合
+  (`static_assert`) をやめた。`FmMemoryAccess` の照合は残した
+- `cmake/CheckApiHeader.cmake`: configure のたびに、ヘッダが記録してある正本の写しと
+  同じであること (改行を LF にそろえた SHA-256)、ヘッダの宣言と `.def` の EXPORTS が
+  同じ集合であることを確かめる。FMEngineTest の `cmake/CheckApiSymbols.cmake` を
+  基にした
+- `LICENSE` と README のライセンスの節に、ヘッダが FMEngineTest (MIT License) の
+  写しであることを書いた
+
+#### 確認
+
+**確認済み** — `api_test` が全件通る (MSVC 19.51、上の手順のコマンド)。型が変わる
+ので、移植したテストは直す前のコードではコンパイルできない。代わりに、今のコードの
+写しに改変を入れて、テストが落ちることを見た:
+
+- 名前を先頭の1文字だけで比べる → accept の部位の名前の項目ほか 22 項目
+- OPNA が `RHYTHM` を列挙する → memory と memex の OPNA の 3 項目
+- `FM` と `SSG` の名前を取り違える → route の 17 項目
+- `ADPCM_B_ROMMODE` の名前が RAM モードのメモリを指す → memex・play・store の 8 項目
+- `SetMemory` の ROM モードのメモリも写す → play の1項目 (チップの書き込みを
+  捨てること)
+- 範囲外の index でも名前を返す → accept と memory の列挙の 7 項目
+
+**確認済み** — 改定前 (`8a87d40`、番号で指定) と改定後 (名前で指定) の DLL の出力の
+比較。両方を `cl` でビルドし (メモリを 0 で埋める `operator new` 入り)、同じ
+プロセスに読み込んで、同じ内容の呼び出しをして `Generate` の出力をビット単位で
+比べた。OPN、OPNA、OPNB、OPNBB、OPN2、OPM、SSG と、3 チップを1つのエンジンに入れた
+ものの 17 ケース × チップのゲイン2通りの 34 件すべてで不一致 0。改定後の側だけ部位
+`SSG` のゲインを 0 にすると、OPN 系の SSG を含む 16 件だけが食い違った。比較用の
+プログラムはリポジトリに残していない。
+
+**確認済み** — `cmake/CheckApiHeader.cmake`: 今のヘッダと `.def` で通る (20 関数)。
+ヘッダを CRLF にした写しでも通る。ヘッダを1文字変える、`.def` から1つ抜く、
+`.def` に `FmEngine_GetPartMask` を足す、の3通りはどれも止まる。
+
+**確認済み** — CMake (VS 18 2026、Release) でビルドが通る。dumpbin で、DLL が仕様の
+20 関数だけをエクスポートし (`GetPartMask` と `GetMemorySize` は無い)、
+インポートライブラリの参照先が `FmGenEngine.dll` であることを見た。
+
+試験していないこと:
+
+- FMEngineTest のテストツール (`20c4923` の `src/main.cpp`) からこの DLL を読み込んで
+  鳴らすこと。**未検証**: ツールのビルドに RtAudio と nlohmann/json のサブモジュール
+  が要り、手元に展開していなかった。この DLL が仕様の関数をエクスポートし、正本の
+  ヘッダで宣言どおりに呼べることは、上のテストと dumpbin で見ている
+- CMake の Debug 構成、MSVC 以外のコンパイラ
 
 ### 2026-10-02 OPNA の ADPCM-B の x8 を番地順にする
 

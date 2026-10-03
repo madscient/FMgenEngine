@@ -2,10 +2,12 @@
 // C API の回帰テスト (部位ごとのゲイン、FM 部のネイティブレート、クロック、外部
 // メモリ)。C API を通して見る (default だけはラッパーのチップを直接使う)。
 //
-//   accept : clock=0 を拒否すること。全チップ × FmPart の番号 0..15 で、受け付ける
-//            組み合わせ、既定値、設定した値の読み戻し、GetPartMask。未知の chip_id・
-//            null を拒否すること
-//   route  : OPN 系で FM_PART_OPN_FM が FM (ADPCM を含む) に、FM_PART_OPN_SSG が SSG
+//   accept : clock=0 を拒否すること。全チップについて、GetPartCount / GetPartName が
+//            列挙する部位の名前の集合、列挙した名前がどれも SetPartGain / GetPartGain
+//            に渡せること、既定値、設定した値の読み戻し。チップが持たない名前
+//            (ほかのチップの部位、大文字小文字の違い、空文字列、nullptr)・範囲外の
+//            index・未知の chip_id・nullptr の出力先を拒否すること
+//   route  : OPN 系で "FM" が FM (ADPCM を含む) に、"SSG" が SSG
 //            に掛かること。片方だけを鳴らし、鳴っていない側の部位を 0 にしても出力が
 //            変わらず、鳴っている側を 0 にすると無音になることを見る。L/R を別々に
 //            掛けること。チップのゲインと部位のゲインが掛け算になること
@@ -17,16 +19,20 @@
 //   native : GetNativeRate の値 (prescale の書き込みを含む)。その値が fmgen が実際に
 //            使っているレートであることを、FM の音程 (fnum から計算) と SSG の音程
 //            (TP から計算) を測って確かめる
-//   memory : SetMemory が FM_MEM_ADPCM_B_ROMMODE・範囲外の種別・size 0・null・未知の
-//            chip_id を拒否すること。GetMemorySize。エンジンが data に書き込まない
-//            こと (OPNA でチップにメモリを書かせても、渡したバッファは変わらない。
-//            書き込みが実際に起きたことは、再生の音が変わることで確かめる)
-//   memex  : SetMemoryEx が受け付けるチップと種別の組み合わせ。範囲の検査 (size 0、
-//            2^32 越え、重なり、隣接)、未知の access、null での取り外し、
-//            GetMemorySize が大きさの合計を返すこと。SetMemory が割り当てを
-//            [0, size) に置き換えること
+//   memory : 全チップについて、GetMemoryCount / GetMemoryName が列挙する外部メモリの
+//            名前の集合 (OPNA は "RHYTHM" を持たない)。列挙した名前がどれも SetMemory と
+//            SetMemoryEx に渡せること。チップが持たない名前・nullptr・size 0・null の
+//            data・未知の chip_id を拒否すること。エンジンが data に書き込まないこと
+//            (OPNA の "ADPCM_B" は写しなので、チップにメモリを書かせても渡した
+//            バッファは変わらず、再生の音は変わる)
+//   memex  : SetMemoryEx が受け付けるチップと名前の組み合わせ。範囲の検査 (size 0、
+//            2^32 越え、重なり、隣接)、未知の access、null での取り外し。SetMemory が
+//            割り当てを [0, size) に置き換えること。割り当ての有無は、1 バイトの
+//            割り当てが重なりで拒否されるかで見る
 //   play   : OPNA の ADPCM-B が ROM/RAM 選択ビットの側のメモリだけを読むこと (何も
-//            割り当てないときと出力を比べる)。ROM モードは x1/x8 の選択によらず
+//            割り当てないときと出力を比べる)。SetMemory の "ADPCM_B_ROMMODE" が ROM
+//            モードで鳴り、SetMemoryEx の ROM と同じ出力になること (参照なので、
+//            チップに書かせても音もバッファも変わらない)。ROM モードは x1/x8 の選択によらず
 //            32 バイト単位・番地順に読むこと。x8 の RAM モードも同じ (どちらも、同じ
 //            バイト列を x1 の RAM モードで鳴らした出力と一致する)。x1 が 32KB で
 //            折り返さないこと。ブロックを分けても1つのときと同じ出力になること
@@ -45,7 +51,7 @@
 //
 // 全件通れば終了コード 0。
 
-#include "FmGenEngine.h"
+#include "FmEngineApi.h"
 #include "FmEngine.h"
 
 #include <algorithm>
@@ -102,7 +108,9 @@ static constexpr uint32_t kRate = 48000;
 
 struct W { uint32_t port; uint8_t reg; uint8_t val; };
 using Writes = std::vector<W>;
-using Memory = std::vector<std::pair<FmMemoryType, std::vector<uint8_t>>>;
+using Memory = std::vector<std::pair<const char*, std::vector<uint8_t>>>;  // 外部メモリの名前とデータ
+
+static bool is(const char* a, const char* b) { return std::strcmp(a, b) == 0; }
 
 static Writes operator+(Writes a, const Writes& b) { a.insert(a.end(), b.begin(), b.end()); return a; }
 
@@ -207,9 +215,9 @@ static Writes opnbAdpcmB() {
 
 static Memory adpcmMemory(const char* name) {
     if (!std::strcmp(name, "OPNA"))
-        return { { FM_MEM_ADPCM_B, noiseBytes(0x40000, 3) } };
+        return { { "ADPCM_B", noiseBytes(0x40000, 3) } };
     if (!std::strcmp(name, "OPNB") || !std::strcmp(name, "OPNBB"))
-        return { { FM_MEM_ADPCM_A, noiseBytes(0x10000, 1) }, { FM_MEM_ADPCM_B, noiseBytes(0x40000, 2) } };
+        return { { "ADPCM_A", noiseBytes(0x10000, 1) }, { "ADPCM_B", noiseBytes(0x40000, 2) } };
     return {};
 }
 
@@ -249,8 +257,8 @@ static std::vector<float> render(const char* name, const Writes& writes, const M
         for (const auto& m : mem)
             FmEngine_SetMemory(e, id, m.first, m.second.data(), static_cast<uint32_t>(m.second.size()));
         FmEngine_SetGain(e, id, g.chip_l, g.chip_r);
-        FmEngine_SetPartGain(e, id, FM_PART_OPN_FM,  g.fm_l,  g.fm_r);
-        FmEngine_SetPartGain(e, id, FM_PART_OPN_SSG, g.ssg_l, g.ssg_r);
+        FmEngine_SetPartGain(e, id, "FM",  g.fm_l,  g.fm_r);
+        FmEngine_SetPartGain(e, id, "SSG", g.ssg_l, g.ssg_r);
     }, writes, samples);
 }
 
@@ -291,19 +299,36 @@ static void testAccept() {
         FmEngine_Destroy(e0);
     }
 
+    // 仕様書の表にある部位の名前の全部と、紛らわしい名前
+    static const char* const kCandidates[] = {
+        "FM", "SSG", "MELODY", "RHYTHM", "AB", "CD", "DO0", "DO1", "DO2",
+        "fm", "Ssg", "", "FM ", "F", "SSGX",
+    };
+
     FmEngineHandle e = FmEngine_Create(kRate);
     for (const char* name : kChips) {
         uint32_t id = 0;
         FmEngine_AddChip(e, name, clockOf(name), &id);
-        const uint32_t expect = isOpnFamily(name) ? 0x3u : 0u;
-        uint32_t mask = 0xFFFFFFFFu;
-        const FmResult rm = FmEngine_GetPartMask(e, id, &mask);
-        check(rm == FM_OK && mask == expect, "accept %s: GetPartMask = 0x%X (expect 0x%X)", name, mask, expect);
+
+        // 列挙。OPN 系は FM と SSG、ほかは部位を持たない (並ぶ順序は仕様が定めない)
+        const std::vector<std::string> expect =
+            isOpnFamily(name) ? std::vector<std::string>{ "FM", "SSG" } : std::vector<std::string>{};
+        const uint32_t count = FmEngine_GetPartCount(e, id);
+        std::vector<std::string> listed;
+        bool listOk = true;
+        for (uint32_t i = 0; i < count; ++i) {
+            const char* p = FmEngine_GetPartName(e, id, i);
+            listOk &= p != nullptr && p == FmEngine_GetPartName(e, id, i);
+            if (p) listed.push_back(p);
+        }
+        listOk &= FmEngine_GetPartName(e, id, count) == nullptr;
+        listOk &= FmEngine_GetPartName(e, id, 0xFFFFFFFFu) == nullptr;
+        std::sort(listed.begin(), listed.end());
+        check(listOk && listed == expect, "accept %s: GetPartCount / GetPartName list %u part(s)", name, count);
 
         bool ok = true;
-        for (int p = 0; p <= 15; ++p) {
-            const FmPart part = static_cast<FmPart>(p);
-            const bool has = (expect >> p) & 1u;
+        for (const char* part : kCandidates) {
+            const bool has = std::find(expect.begin(), expect.end(), part) != expect.end();
             float l = -1, r = -1, l2 = -1, r2 = -1;
             const FmResult g1 = FmEngine_GetPartGain(e, id, part, &l, &r);
             const FmResult s  = FmEngine_SetPartGain(e, id, part, 0.25f, 0.75f);
@@ -314,23 +339,31 @@ static void testAccept() {
             else
                 ok &= g1 == FM_ERR_INVALID_ARG && s == FM_ERR_INVALID_ARG && g2 == FM_ERR_INVALID_ARG;
         }
-        check(ok, "accept %s: FmPart 0..15 (default 1.0, read back, others rejected)", name);
+        // 列挙した名前は、写した文字列で渡しても通る (ポインタではなく中身で比べる)
+        for (const std::string& p : listed) {
+            float l = 0, r = 0;
+            ok &= FmEngine_GetPartGain(e, id, p.c_str(), &l, &r) == FM_OK;
+        }
+        float l = 0, r = 0;
+        ok &= FmEngine_SetPartGain(e, id, nullptr, 1, 1) == FM_ERR_INVALID_ARG;
+        ok &= FmEngine_GetPartGain(e, id, nullptr, &l, &r) == FM_ERR_INVALID_ARG;
+        check(ok, "accept %s: part names (default 1.0, read back, others and nullptr rejected)", name);
     }
 
     const uint32_t unknown = sizeof(kChips) / sizeof(kChips[0]);
-    uint32_t mask = 0;
     float l = 0, r = 0;
-    check(FmEngine_GetPartMask(e, unknown, &mask) == FM_ERR_INVALID_ARG
-       && FmEngine_SetPartGain(e, unknown, FM_PART_OPN_FM, 1, 1) == FM_ERR_INVALID_ARG
-       && FmEngine_GetPartGain(e, unknown, FM_PART_OPN_FM, &l, &r) == FM_ERR_INVALID_ARG,
+    check(FmEngine_GetPartCount(e, unknown) == 0
+       && FmEngine_GetPartName(e, unknown, 0) == nullptr
+       && FmEngine_SetPartGain(e, unknown, "FM", 1, 1) == FM_ERR_INVALID_ARG
+       && FmEngine_GetPartGain(e, unknown, "FM", &l, &r) == FM_ERR_INVALID_ARG,
           "accept: unknown chip_id is rejected");
-    check(FmEngine_GetPartMask(e, 0, nullptr) == FM_ERR_INVALID_ARG
-       && FmEngine_GetPartGain(e, 0, FM_PART_OPN_FM, nullptr, &r) == FM_ERR_INVALID_ARG
-       && FmEngine_GetPartGain(e, 0, FM_PART_OPN_FM, &l, nullptr) == FM_ERR_INVALID_ARG,
+    check(FmEngine_GetPartGain(e, 0, "FM", nullptr, &r) == FM_ERR_INVALID_ARG
+       && FmEngine_GetPartGain(e, 0, "FM", &l, nullptr) == FM_ERR_INVALID_ARG,
           "accept: null output pointer is rejected");
-    check(FmEngine_GetPartMask(nullptr, 0, &mask) == FM_ERR_INVALID_ARG
-       && FmEngine_SetPartGain(nullptr, 0, FM_PART_OPN_FM, 1, 1) == FM_ERR_INVALID_ARG
-       && FmEngine_GetPartGain(nullptr, 0, FM_PART_OPN_FM, &l, &r) == FM_ERR_INVALID_ARG,
+    check(FmEngine_GetPartCount(nullptr, 0) == 0
+       && FmEngine_GetPartName(nullptr, 0, 0) == nullptr
+       && FmEngine_SetPartGain(nullptr, 0, "FM", 1, 1) == FM_ERR_INVALID_ARG
+       && FmEngine_GetPartGain(nullptr, 0, "FM", &l, &r) == FM_ERR_INVALID_ARG,
           "accept: null handle is rejected");
     FmEngine_Destroy(e);
 }
@@ -397,9 +430,13 @@ static void defaultOne(FmGenChipType type, const char* name, uint32_t clock,
     auto raw = std::make_unique<Raw>();
     initRaw(*raw, clock, mem);
     for (const auto& m : mem) {
-        const auto type = static_cast<ChipMemoryType>(m.first);
-        wrapped->setMemory(type, m.second.data(), static_cast<uint32_t>(m.second.size()));
-        control->setMemory(type, m.second.data(), static_cast<uint32_t>(m.second.size()));
+        ChipMemoryType mem_type{};
+        if (!wrapped->memories().find(m.first, mem_type)) {
+            check(false, "default %s: chip has no memory named %s", name, m.first);
+            return;
+        }
+        wrapped->setMemory(mem_type, m.second.data(), static_cast<uint32_t>(m.second.size()));
+        control->setMemory(mem_type, m.second.data(), static_cast<uint32_t>(m.second.size()));
     }
     for (const auto& x : w) {
         wrapped->write(x.port, x.reg, x.val);
@@ -441,7 +478,7 @@ static bool initOpna(FM::OPNA& c, uint32_t clock, const Memory& mem) {
     const std::string dir = fmgen_detail::getDllDir();
     c.LoadRhythmSample(dir.empty() ? nullptr : dir.c_str());
     for (const auto& m : mem)
-        if (m.first == FM_MEM_ADPCM_B) std::memcpy(c.GetADPCMBuffer(), m.second.data(), 0x40000);
+        if (is(m.first, "ADPCM_B")) std::memcpy(c.GetADPCMBuffer(), m.second.data(), 0x40000);
     return true;
 }
 template<typename Opnb>
@@ -450,7 +487,7 @@ static bool initOpnb(Opnb& c, uint32_t clock, const Memory& mem) {
     uint8_t* b = nullptr; int bs = 0;
     for (const auto& m : mem) {
         auto* p = const_cast<uint8_t*>(m.second.data());
-        if (m.first == FM_MEM_ADPCM_A) { a = p; as = static_cast<int>(m.second.size()); }
+        if (is(m.first, "ADPCM_A")) { a = p; as = static_cast<int>(m.second.size()); }
         else                           { b = p; bs = static_cast<int>(m.second.size()); }
     }
     return c.Init(clock, kRate, false, a, as, b, bs);
@@ -571,47 +608,74 @@ static void testNative() {
 }
 
 // ---- memory ----------------------------------------------------------------
+static const char* const kAllChips[] = { "OPN", "OPNA", "OPNB", "OPNBB", "OPN2", "OPM", "SSG" };
+
+// チップが持つ外部メモリの名前 (並ぶ順序は仕様が定めないので、並べ替えて比べる)。
+// OPNA のリズム音の内蔵 ROM ("RHYTHM") は持たない
+static std::vector<std::string> expectedMemories(const char* chip) {
+    if (is(chip, "OPNA")) return { "ADPCM_B", "ADPCM_B_ROMMODE" };
+    if (is(chip, "OPNB") || is(chip, "OPNBB")) return { "ADPCM_A", "ADPCM_B" };
+    return {};
+}
+
+// 仕様書の表にある外部メモリの名前の全部と、紛らわしい名前
+static const char* const kMemoryCandidates[] = {
+    "RHYTHM", "ADPCM_A", "ADPCM_B", "ADPCM_B_ROMMODE", "PCM",
+    "adpcm_b", "ADPCM_B ", "ADPCM", "",
+};
+
+static bool contains(const std::vector<std::string>& v, const char* s) {
+    return std::find(v.begin(), v.end(), s) != v.end();
+}
+
 static void testMemory() {
     const std::vector<uint8_t> buf = noiseBytes(0x1000, 7);
     const uint32_t n = static_cast<uint32_t>(buf.size());
 
-    {
+    for (const char* name : kAllChips) {
         FmEngineHandle e = FmEngine_Create(kRate);
-        bool ok = true;
-        for (const char* name : { "OPN", "OPNA", "OPNB" }) {
-            uint32_t id = 0;
-            FmEngine_AddChip(e, name, clockOf(name), &id);
-            ok &= FmEngine_SetMemory(e, id, FM_MEM_ADPCM_B_ROMMODE, buf.data(), n) == FM_ERR_INVALID_ARG;
-            ok &= FmEngine_SetMemory(e, id, static_cast<FmMemoryType>(0), buf.data(), n) == FM_ERR_INVALID_ARG;
-            ok &= FmEngine_SetMemory(e, id, static_cast<FmMemoryType>(5), buf.data(), n) == FM_ERR_INVALID_ARG;
-            ok &= FmEngine_SetMemory(e, id, FM_MEM_ADPCM_B, buf.data(), 0) == FM_ERR_INVALID_ARG;
-            ok &= FmEngine_SetMemory(e, id, FM_MEM_ADPCM_B, nullptr, n) == FM_ERR_INVALID_ARG;
+        uint32_t id = 0;
+        FmEngine_AddChip(e, name, clockOf(name), &id);
+        const std::vector<std::string> expect = expectedMemories(name);
+
+        const uint32_t count = FmEngine_GetMemoryCount(e, id);
+        std::vector<std::string> listed;
+        bool listOk = true;
+        for (uint32_t i = 0; i < count; ++i) {
+            const char* p = FmEngine_GetMemoryName(e, id, i);
+            listOk &= p != nullptr && p == FmEngine_GetMemoryName(e, id, i);
+            if (p) listed.push_back(p);
         }
-        check(ok, "memory: ROMMODE, out-of-range types, size 0 and null data are rejected");
+        listOk &= FmEngine_GetMemoryName(e, id, count) == nullptr;
+        listOk &= FmEngine_GetMemoryName(e, id, 0xFFFFFFFFu) == nullptr;
+        std::sort(listed.begin(), listed.end());
+        check(listOk && listed == expect,
+              "memory %s: GetMemoryCount / GetMemoryName list %u memory(ies)", name, count);
+
+        bool ok = true;
+        for (const char* m : kMemoryCandidates)
+            ok &= FmEngine_SetMemory(e, id, m, buf.data(), n)
+                  == (contains(expect, m) ? FM_OK : FM_ERR_INVALID_ARG);
+        ok &= FmEngine_SetMemory(e, id, nullptr, buf.data(), n) == FM_ERR_INVALID_ARG;
+        for (const std::string& m : listed) {
+            // 列挙した名前は、写した文字列で渡しても通る
+            ok &= FmEngine_SetMemory(e, id, m.c_str(), buf.data(), n) == FM_OK;
+            ok &= FmEngine_SetMemory(e, id, m.c_str(), buf.data(), 0) == FM_ERR_INVALID_ARG;
+            ok &= FmEngine_SetMemory(e, id, m.c_str(), nullptr, n) == FM_ERR_INVALID_ARG;
+        }
+        check(ok, "memory %s: SetMemory takes every listed name; others, nullptr, size 0, null data rejected", name);
         FmEngine_Destroy(e);
     }
 
     {
         FmEngineHandle e = FmEngine_Create(kRate);
-        uint32_t opn = 0, opna = 0, opnb = 0;
-        FmEngine_AddChip(e, "OPN",  clockOf("OPN"),  &opn);
-        FmEngine_AddChip(e, "OPNA", clockOf("OPNA"), &opna);
-        FmEngine_AddChip(e, "OPNB", clockOf("OPNB"), &opnb);
-        bool ok = true;
-        ok &= FmEngine_SetMemory(e, opna, FM_MEM_ADPCM_B, buf.data(), n) == FM_OK;
-        ok &= FmEngine_GetMemorySize(e, opna, FM_MEM_ADPCM_B) == n;
-        ok &= FmEngine_GetMemorySize(e, opna, FM_MEM_ADPCM_B_ROMMODE) == 0;
-        // OPNA のリズムは WAV から読むので ADPCM-A は受け付けて読まない。
-        // チップが持たない種別も受け付けて読まない (YMEngine と同じ)
-        ok &= FmEngine_SetMemory(e, opna, FM_MEM_ADPCM_A, buf.data(), n) == FM_OK;
-        ok &= FmEngine_GetMemorySize(e, opna, FM_MEM_ADPCM_A) == n;
-        ok &= FmEngine_SetMemory(e, opn, FM_MEM_PCM, buf.data(), n) == FM_OK;
-        ok &= FmEngine_GetMemorySize(e, opn, FM_MEM_PCM) == 0;
-        ok &= FmEngine_SetMemory(e, opnb, FM_MEM_ADPCM_A, buf.data(), n) == FM_OK;
-        ok &= FmEngine_SetMemory(e, opnb, FM_MEM_ADPCM_B, buf.data(), n / 2) == FM_OK;
-        ok &= FmEngine_GetMemorySize(e, opnb, FM_MEM_ADPCM_A) == n;
-        ok &= FmEngine_GetMemorySize(e, opnb, FM_MEM_ADPCM_B) == n / 2;
-        check(ok, "memory: accepted types and GetMemorySize");
+        check(FmEngine_GetMemoryCount(e, 0) == 0
+           && FmEngine_GetMemoryName(e, 0, 0) == nullptr
+           && FmEngine_SetMemory(e, 0, "ADPCM_B", buf.data(), n) == FM_ERR_INVALID_ARG
+           && FmEngine_GetMemoryCount(nullptr, 0) == 0
+           && FmEngine_GetMemoryName(nullptr, 0, 0) == nullptr
+           && FmEngine_SetMemory(nullptr, 0, "ADPCM_B", buf.data(), n) == FM_ERR_INVALID_ARG,
+              "memory: unknown chip_id and null handle are rejected");
         FmEngine_Destroy(e);
     }
 
@@ -634,37 +698,25 @@ static void testMemory() {
         check(mem[0].second == a && mem[1].second == b && countNonZero(out, 0) > 0,
               "memory: OPNB playback does not modify the caller's data");
     }
-
-    // 未知の chip_id (直す前は範囲外アクセスになるので最後に置く)
-    {
-        FmEngineHandle e = FmEngine_Create(kRate);
-        check(FmEngine_SetMemory(e, 0, FM_MEM_ADPCM_B, buf.data(), n) == FM_ERR_INVALID_ARG,
-              "memory: unknown chip_id is rejected");
-        FmEngine_Destroy(e);
-    }
 }
 
 // ---- memex -----------------------------------------------------------------
 static void testMemoryEx() {
-    static const char* const kChips[] = { "OPN", "OPNA", "OPNB", "OPNBB", "OPN2", "OPM", "SSG" };
-    // bit n = FmMemoryType の n 番
-    constexpr uint32_t A = 1u << FM_MEM_ADPCM_A, B = 1u << FM_MEM_ADPCM_B;
-    constexpr uint32_t R = 1u << FM_MEM_ADPCM_B_ROMMODE;
     std::vector<uint8_t> buf(16);
-    for (const char* name : kChips) {
-        const uint32_t expect = !std::strcmp(name, "OPNA") ? (A | B | R)
-                              : (!std::strcmp(name, "OPNB") || !std::strcmp(name, "OPNBB")) ? (A | B) : 0;
+    for (const char* name : kAllChips) {
+        const std::vector<std::string> expect = expectedMemories(name);
         FmEngineHandle e = FmEngine_Create(kRate);
         uint32_t id = 0;
         FmEngine_AddChip(e, name, clockOf(name), &id);
-        uint32_t mapped = 0, unmapped = 0;
-        for (uint32_t t = 0; t <= 5; ++t) {  // 0 と 5 は範囲外の番号
-            const auto type = static_cast<FmMemoryType>(t);
-            if (FmEngine_SetMemoryEx(e, id, type, 0, buf.data(), 16, FM_ACCESS_ROM) == FM_OK) mapped |= 1u << t;
-            if (FmEngine_SetMemoryEx(e, id, type, 0, nullptr, 16, FM_ACCESS_ROM) == FM_OK) unmapped |= 1u << t;
+        bool ok = true;
+        for (const char* m : kMemoryCandidates) {
+            const FmResult want = contains(expect, m) ? FM_OK : FM_ERR_INVALID_ARG;
+            ok &= FmEngine_SetMemoryEx(e, id, m, 0, buf.data(), 16, FM_ACCESS_ROM) == want;
+            ok &= FmEngine_SetMemoryEx(e, id, m, 0, nullptr, 16, FM_ACCESS_ROM) == want;
         }
-        check(mapped == expect && unmapped == expect,
-              "memex: %s accepts map=0x%02X unmap=0x%02X (expect 0x%02X)", name, mapped, unmapped, expect);
+        ok &= FmEngine_SetMemoryEx(e, id, nullptr, 0, buf.data(), 16, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
+        ok &= FmEngine_SetMemoryEx(e, id, nullptr, 0, nullptr, 16, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
+        check(ok, "memex: %s maps and unmaps exactly the memories it lists (%zu)", name, expect.size());
         FmEngine_Destroy(e);
     }
 
@@ -673,13 +725,21 @@ static void testMemoryEx() {
     FmEngine_AddChip(e, "OPNA", clockOf("OPNA"), &id);
     std::vector<uint8_t> b(0x1000);
     auto mapB = [&](uint32_t base, uint32_t size, FmMemoryAccess a) {
-        return FmEngine_SetMemoryEx(e, id, FM_MEM_ADPCM_B, base, b.data(), size, a);
+        return FmEngine_SetMemoryEx(e, id, "ADPCM_B", base, b.data(), size, a);
     };
     // 取り外すときは access を見ない
     auto unmapB = [&](uint32_t base, uint32_t size) {
-        return FmEngine_SetMemoryEx(e, id, FM_MEM_ADPCM_B, base, nullptr, size, static_cast<FmMemoryAccess>(7));
+        return FmEngine_SetMemoryEx(e, id, "ADPCM_B", base, nullptr, size, static_cast<FmMemoryAccess>(7));
     };
-    bool ok = true;
+    // 番地 addr に割り当てがあるか。1 バイトの割り当てが重なりで拒否されるかで見る
+    // (通ったら外して元に戻す)
+    auto mappedAt = [&](const char* memory, uint32_t addr) {
+        static uint8_t probe = 0;
+        if (FmEngine_SetMemoryEx(e, id, memory, addr, &probe, 1, FM_ACCESS_ROM) != FM_OK) return true;
+        FmEngine_SetMemoryEx(e, id, memory, addr, nullptr, 1, FM_ACCESS_ROM);
+        return false;
+    };
+    bool ok = !mappedAt("ADPCM_B", 0) && !mappedAt("ADPCM_B_ROMMODE", 0);
     ok &= mapB(0, 0, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
     ok &= unmapB(0, 0) == FM_ERR_INVALID_ARG;
     ok &= mapB(0xFFFFFFF0u, 0x11, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;  // 2^32 を越える
@@ -690,35 +750,42 @@ static void testMemoryEx() {
     ok &= mapB(0x200, 0x100, FM_ACCESS_RAM) == FM_OK;                    // 隣接
     ok &= mapB(0x000, 0x100, FM_ACCESS_ROM) == FM_OK;                    // 隣接
     ok &= mapB(0x400, 0x10, static_cast<FmMemoryAccess>(2)) == FM_ERR_INVALID_ARG;
-    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B) == 0x310;
+    // 割り当たっているのは [0, 0x300) と [0xFFFFFFF0, 2^32)
+    ok &= mappedAt("ADPCM_B", 0x000) && mappedAt("ADPCM_B", 0x0FF) && mappedAt("ADPCM_B", 0x100)
+       && mappedAt("ADPCM_B", 0x2FF) && !mappedAt("ADPCM_B", 0x300) && !mappedAt("ADPCM_B", 0x400)
+       && !mappedAt("ADPCM_B", 0xFFFFFFEFu) && mappedAt("ADPCM_B", 0xFFFFFFF0u)
+       && mappedAt("ADPCM_B", 0xFFFFFFFFu);
     // ROM モードのメモリは別の空間
-    ok &= FmEngine_SetMemoryEx(e, id, FM_MEM_ADPCM_B_ROMMODE, 0x100, b.data(), 0x100, FM_ACCESS_ROM) == FM_OK;
-    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B_ROMMODE) == 0x100;
+    ok &= !mappedAt("ADPCM_B_ROMMODE", 0x100);
+    ok &= FmEngine_SetMemoryEx(e, id, "ADPCM_B_ROMMODE", 0x100, b.data(), 0x100, FM_ACCESS_ROM) == FM_OK;
+    ok &= mappedAt("ADPCM_B_ROMMODE", 0x100) && !mappedAt("ADPCM_B_ROMMODE", 0x000);
     // 重なる割り当てをすべて外す
     ok &= unmapB(0x180, 1) == FM_OK;
-    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B) == 0x210;
+    ok &= mappedAt("ADPCM_B", 0x0FF) && !mappedAt("ADPCM_B", 0x100) && !mappedAt("ADPCM_B", 0x1FF)
+       && mappedAt("ADPCM_B", 0x200);
     ok &= unmapB(0x0FF, 0x102) == FM_OK;  // [0, 0x100) と [0x200, 0x300) に掛かる
-    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B) == 0x10;
+    ok &= !mappedAt("ADPCM_B", 0x000) && !mappedAt("ADPCM_B", 0x200) && mappedAt("ADPCM_B", 0xFFFFFFF0u);
     ok &= unmapB(0x5000, 0x10) == FM_OK;  // 何も無い範囲
-    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B_ROMMODE) == 0x100;
-    check(ok, "memex: range checks, overlap, adjacency, unknown access, unmap and GetMemorySize");
+    ok &= mappedAt("ADPCM_B", 0xFFFFFFF0u) && mappedAt("ADPCM_B_ROMMODE", 0x100);
+    check(ok, "memex: range checks, overlap, adjacency, unknown access and unmap");
 
-    ok = FmEngine_SetMemory(e, id, FM_MEM_ADPCM_B, b.data(), 0x800) == FM_OK;
-    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B) == 0x800;
+    ok = FmEngine_SetMemory(e, id, "ADPCM_B", b.data(), 0x800) == FM_OK;
+    ok &= mappedAt("ADPCM_B", 0x000) && mappedAt("ADPCM_B", 0x7FF) && !mappedAt("ADPCM_B", 0x800)
+       && !mappedAt("ADPCM_B", 0xFFFFFFF0u);
     ok &= mapB(0x7FF, 1, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
     ok &= mapB(0x800, 1, FM_ACCESS_ROM) == FM_OK;
-    ok &= FmEngine_GetMemorySize(e, id, FM_MEM_ADPCM_B_ROMMODE) == 0x100;
-    check(ok, "memex: SetMemory replaces the mappings of the type with [0, size)");
+    ok &= mappedAt("ADPCM_B_ROMMODE", 0x100);
+    check(ok, "memex: SetMemory replaces the mappings of the memory with [0, size)");
 
-    ok = FmEngine_SetMemoryEx(e, id + 1, FM_MEM_ADPCM_B, 0, b.data(), 1, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
-    ok &= FmEngine_SetMemoryEx(nullptr, id, FM_MEM_ADPCM_B, 0, b.data(), 1, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
+    ok = FmEngine_SetMemoryEx(e, id + 1, "ADPCM_B", 0, b.data(), 1, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
+    ok &= FmEngine_SetMemoryEx(nullptr, id, "ADPCM_B", 0, b.data(), 1, FM_ACCESS_ROM) == FM_ERR_INVALID_ARG;
     check(ok, "memex: unknown chip_id and null handle are rejected");
     FmEngine_Destroy(e);
 }
 
 // ---- play ------------------------------------------------------------------
 struct Map {
-    FmMemoryType          type;
+    const char*           memory;
     uint32_t              base;
     std::vector<uint8_t>* data;
     FmMemoryAccess        access;
@@ -727,7 +794,7 @@ struct Map {
 static Setup mapping(std::vector<Map> maps) {
     return [maps](FmEngineHandle e, uint32_t id) {
         for (const Map& m : maps)
-            FmEngine_SetMemoryEx(e, id, m.type, m.base, m.data->data(),
+            FmEngine_SetMemoryEx(e, id, m.memory, m.base, m.data->data(),
                                  static_cast<uint32_t>(m.data->size()), m.access);
     };
 }
@@ -750,12 +817,28 @@ static void testPlay() {
     for (const Mode& m : modes) {
         const Writes w = opnaAdpcmB(m.control2);
         const auto none = renderWith("OPNA", nullptr, w, n);
-        const auto ram  = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, 0, &noise, FM_ACCESS_ROM } }), w, n);
-        const auto rom  = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B_ROMMODE, 0, &noise, FM_ACCESS_ROM } }), w, n);
+        const auto ram  = renderWith("OPNA", mapping({ { "ADPCM_B", 0, &noise, FM_ACCESS_ROM } }), w, n);
+        const auto rom  = renderWith("OPNA", mapping({ { "ADPCM_B_ROMMODE", 0, &noise, FM_ACCESS_ROM } }), w, n);
         const auto& read  = m.rom ? rom : ram;
         const auto& other = m.rom ? ram : rom;
         check(!sameBits(read, none) && sameBits(other, none),
-              "play: OPNA %s reads only %s", m.what, m.rom ? "FM_MEM_ADPCM_B_ROMMODE" : "FM_MEM_ADPCM_B");
+              "play: OPNA %s reads only %s", m.what, m.rom ? "ADPCM_B_ROMMODE" : "ADPCM_B");
+    }
+
+    // SetMemory に "ADPCM_B_ROMMODE" を渡すと ROM モードで鳴り、SetMemoryEx で ROM として
+    // 割り当てたときと同じ出力になる。参照して書き込みを捨てるので、チップに書かせても
+    // 音は変わらず、渡したバッファも変わらない
+    {
+        std::vector<uint8_t> rom = noiseBytes(0x40000, 31);
+        const Memory mem = { { "ADPCM_B_ROMMODE", rom } };
+        const Writes play = opnaAdpcmB(0xC1);
+        const auto set  = render("OPNA", play, mem, Gains{}, n);
+        const auto ex   = renderWith("OPNA", mapping({ { "ADPCM_B_ROMMODE", 0, &rom, FM_ACCESS_ROM } }), play, n);
+        const auto none = renderWith("OPNA", nullptr, play, n);
+        const auto written = render("OPNA", opnaTransfer(0x01, 0, std::vector<uint8_t>(256, 0x77)) + play,
+                                    mem, Gains{}, n);
+        check(!sameBits(set, none) && sameBits(set, ex) && sameBits(written, set) && mem[0].second == rom,
+              "play: OPNA SetMemory(\"ADPCM_B_ROMMODE\") plays in ROM mode and drops chip writes");
     }
 
     // x8 と ROM モードは 32 バイト単位・番地順 (ROM モードは x1/x8 の選択によらない)。
@@ -764,15 +847,15 @@ static void testPlay() {
     {
         const uint32_t s = 3, e = s + 0x0F;
         std::vector<uint8_t> d = noiseBytes((e + 1 - s) * 32, 13);
-        const auto ref = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, s * 32, &d, FM_ACCESS_ROM } }),
+        const auto ref = renderWith("OPNA", mapping({ { "ADPCM_B", s * 32, &d, FM_ACCESS_ROM } }),
                                     opnaAdpcmB(0xC0, s * 8, (e + 1) * 8 - 1), n);
         bool x8 = countNonZero(ref, 0) > n / 8;
-        x8 &= sameBits(ref, renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, s * 32, &d, FM_ACCESS_ROM } }),
+        x8 &= sameBits(ref, renderWith("OPNA", mapping({ { "ADPCM_B", s * 32, &d, FM_ACCESS_ROM } }),
                                        opnaAdpcmB(0xC2, s, e), n));
         check(x8, "play: OPNA RAM x8 reads bytes in address order in 32-byte units");
         bool rom = true;
         for (uint8_t c2 : { uint8_t{0xC1}, uint8_t{0xC3} }) {
-            rom &= sameBits(ref, renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B_ROMMODE, s * 32, &d, FM_ACCESS_ROM } }),
+            rom &= sameBits(ref, renderWith("OPNA", mapping({ { "ADPCM_B_ROMMODE", s * 32, &d, FM_ACCESS_ROM } }),
                                             opnaAdpcmB(c2, s, e), n));
         }
         check(rom, "play: OPNA ROM mode reads bytes in address order in 32-byte units");
@@ -783,9 +866,9 @@ static void testPlay() {
     {
         std::vector<uint8_t> w = noiseBytes(0x40000, 29);
         std::vector<uint8_t> joined = slice(w, 0x7FE0, 0x8020);
-        const auto across = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, 0, &w, FM_ACCESS_ROM } }),
+        const auto across = renderWith("OPNA", mapping({ { "ADPCM_B", 0, &w, FM_ACCESS_ROM } }),
                                        opnaAdpcmB(0xC0, (0x8000 - 0x20) / 4, 0x8000 / 4 + 0x20 / 4 - 1), n);
-        const auto ref = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, 0, &joined, FM_ACCESS_ROM } }),
+        const auto ref = renderWith("OPNA", mapping({ { "ADPCM_B", 0, &joined, FM_ACCESS_ROM } }),
                                     opnaAdpcmB(0xC0, 0, 0x40 / 4 - 1), n);
         check(countNonZero(ref, 0) > 0 && sameBits(across, ref), "play: OPNA x1 crosses 32KB without wrapping");
     }
@@ -794,9 +877,9 @@ static void testPlay() {
     {
         auto lo = slice(noise, 0, 0x234), hi = slice(noise, 0x234, noise.size());
         const Writes w = opnaAdpcmB();
-        const auto one = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, 0, &noise, FM_ACCESS_ROM } }), w, n);
-        const auto two = renderWith("OPNA", mapping({ { FM_MEM_ADPCM_B, 0, &lo, FM_ACCESS_ROM },
-                                                      { FM_MEM_ADPCM_B, 0x234, &hi, FM_ACCESS_RAM } }), w, n);
+        const auto one = renderWith("OPNA", mapping({ { "ADPCM_B", 0, &noise, FM_ACCESS_ROM } }), w, n);
+        const auto two = renderWith("OPNA", mapping({ { "ADPCM_B", 0, &lo, FM_ACCESS_ROM },
+                                                      { "ADPCM_B", 0x234, &hi, FM_ACCESS_RAM } }), w, n);
         check(sameBits(one, two), "play: OPNA split blocks play like one block");
     }
     for (const char* name : { "OPNB", "OPNBB" }) {
@@ -806,12 +889,12 @@ static void testPlay() {
         auto b1 = slice(b, 0, 0x200), b2 = slice(b, 0x200, b.size());
         const Writes w = opnbAdpcmA() + opnbAdpcmB();
         const auto set = render(name, w, mem, Gains{}, n);
-        const auto one = renderWith(name, mapping({ { FM_MEM_ADPCM_A, 0, &a, FM_ACCESS_ROM },
-                                                    { FM_MEM_ADPCM_B, 0, &b, FM_ACCESS_ROM } }), w, n);
-        const auto two = renderWith(name, mapping({ { FM_MEM_ADPCM_A, 0, &a1, FM_ACCESS_ROM },
-                                                    { FM_MEM_ADPCM_A, 0x300, &a2, FM_ACCESS_RAM },
-                                                    { FM_MEM_ADPCM_B, 0, &b1, FM_ACCESS_RAM },
-                                                    { FM_MEM_ADPCM_B, 0x200, &b2, FM_ACCESS_ROM } }), w, n);
+        const auto one = renderWith(name, mapping({ { "ADPCM_A", 0, &a, FM_ACCESS_ROM },
+                                                    { "ADPCM_B", 0, &b, FM_ACCESS_ROM } }), w, n);
+        const auto two = renderWith(name, mapping({ { "ADPCM_A", 0, &a1, FM_ACCESS_ROM },
+                                                    { "ADPCM_A", 0x300, &a2, FM_ACCESS_RAM },
+                                                    { "ADPCM_B", 0, &b1, FM_ACCESS_RAM },
+                                                    { "ADPCM_B", 0x200, &b2, FM_ACCESS_ROM } }), w, n);
         check(countNonZero(set, 0) > n / 4 && sameBits(set, one) && sameBits(one, two),
               "play: %s SetMemory, SetMemoryEx and split blocks play the same", name);
     }
@@ -822,8 +905,8 @@ static FmEngineHandle opnaWithMemory(uint32_t& id, std::vector<uint8_t>& ram, Fm
                                      std::vector<uint8_t>& rom, FmMemoryAccess rom_access) {
     FmEngineHandle e = FmEngine_Create(kRate);
     FmEngine_AddChip(e, "OPNA", clockOf("OPNA"), &id);
-    FmEngine_SetMemoryEx(e, id, FM_MEM_ADPCM_B, 0, ram.data(), static_cast<uint32_t>(ram.size()), ram_access);
-    FmEngine_SetMemoryEx(e, id, FM_MEM_ADPCM_B_ROMMODE, 0, rom.data(), static_cast<uint32_t>(rom.size()), rom_access);
+    FmEngine_SetMemoryEx(e, id, "ADPCM_B", 0, ram.data(), static_cast<uint32_t>(ram.size()), ram_access);
+    FmEngine_SetMemoryEx(e, id, "ADPCM_B_ROMMODE", 0, rom.data(), static_cast<uint32_t>(rom.size()), rom_access);
     return e;
 }
 
@@ -871,7 +954,7 @@ static void testStore() {
         generate(e, 16);
         std::vector<uint8_t> expect(rom.size(), 0);
         std::copy(pattern.begin(), pattern.end(), expect.begin() + s * 32);
-        check(rom == expect && allZero(ram), "store: OPNA ROM-mode transfer goes to FM_MEM_ADPCM_B_ROMMODE");
+        check(rom == expect && allZero(ram), "store: OPNA ROM-mode transfer goes to ADPCM_B_ROMMODE");
         FmEngine_Destroy(e);
     }
 
@@ -967,16 +1050,16 @@ static void testUnmapped() {
         std::vector<uint8_t> a(full[0].second.size(), 0), b(full[1].second.size(), 0);
         std::copy(full[0].second.begin(), full[0].second.begin() + 0x180, a.begin());
         std::copy(full[1].second.begin(), full[1].second.begin() + 0x180, b.begin());
-        const Memory head   = { { FM_MEM_ADPCM_A, slice(a, 0, 0x180) }, { FM_MEM_ADPCM_B, slice(b, 0, 0x180) } };
-        const Memory padded = { { FM_MEM_ADPCM_A, a }, { FM_MEM_ADPCM_B, b } };
+        const Memory head   = { { "ADPCM_A", slice(a, 0, 0x180) }, { "ADPCM_B", slice(b, 0, 0x180) } };
+        const Memory padded = { { "ADPCM_A", a }, { "ADPCM_B", b } };
         check(sameBits(render(name, w, head, Gains{}, 9600), render(name, w, padded, Gains{}, 9600)),
               "unmapped: %s reads 0 past the end of a block", name);
 
         // 何も割り当てずに ADPCM-A/B を鳴らしても落ちず、0 を読む
         std::vector<uint8_t> za(0x10000, 0), zb(0x40000, 0);
         const auto none  = renderWith(name, nullptr, w, 9600);
-        const auto zeros = renderWith(name, mapping({ { FM_MEM_ADPCM_A, 0, &za, FM_ACCESS_ROM },
-                                                      { FM_MEM_ADPCM_B, 0, &zb, FM_ACCESS_ROM } }), w, 9600);
+        const auto zeros = renderWith(name, mapping({ { "ADPCM_A", 0, &za, FM_ACCESS_ROM },
+                                                      { "ADPCM_B", 0, &zb, FM_ACCESS_ROM } }), w, 9600);
         check(sameBits(none, zeros), "unmapped: %s reads 0 from unmapped ADPCM-A/B memory", name);
     }
 }

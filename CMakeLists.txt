@@ -10,6 +10,9 @@ project(FmGenEngine VERSION 1.0.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# 公開ヘッダが正本の写しのままで、.def のエクスポートと一致することを確かめる
+include(cmake/CheckApiHeader.cmake)
+
 # -------------------------------------------------------
 #  fmgen ソースのパス
 #  配布元: http://retropc.net/cisc/m88/
@@ -119,4 +122,4 @@ install(TARGETS FmEngineApi
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib          # .lib (import library)
 )
-install(FILES src/FmGenEngine.h DESTINATION include)
+install(FILES src/FmEngineApi.h DESTINATION include)

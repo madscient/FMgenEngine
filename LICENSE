@@ -24,7 +24,11 @@ SOFTWARE.
 
 NOTE: This MIT License applies only to the FmGenEngine wrapper/engine code
 located under `src/` (FmGenChip.h, FmGenExtChip.h, FmEngine.h,
-FmGenEngine.h/.cpp/.def/.rc).
+FmGenEngine.cpp/.def/.rc) and to the build scripts (CMakeLists.txt, cmake/).
+
+`src/FmEngineApi.h` is an unmodified copy of `include/FmEngineApi.h` from
+FMEngineTest (https://github.com/madscient/FMEngineTest), MIT License,
+Copyright (c) 2026 MadScient.
 
 It does NOT apply to:
   - `extern/fmgen/` — fmgen by cisc (1998, 2003), under its own original

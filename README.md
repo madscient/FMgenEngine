@@ -1,8 +1,8 @@
 # FmGenEngine
 
 **fmgen** ([cisc](mailto:cisc@retropc.net), 1998-2003) をコアとした、
-[YMEngine](https://github.com/madscient/YMEngine) (ymfm版) と
-**API (ABI) 互換**の Windows 向け FM 音源エンジン DLL。
+**FmEngineApi** ([仕様](https://github.com/madscient/FMEngineTest/blob/main/docs/FmEngineApi.md))
+に準拠する Windows 向け FM 音源エンジン DLL。
 
 ライセンス: FmGenEngine 独自コード (`src/`) は
 **MIT License** ([`LICENSE`](./LICENSE))。同梱の fmgen 本体
@@ -10,11 +10,15 @@
 
 ## 概要
 
-YMEngine の `FmEngineApi.h` と同じ関数・列挙値を持つヘッダ (`FmGenEngine.h`) を
-そのまま使い、DLL の中身だけを ymfm → fmgen に差し替えたもの。YMEngine 向けに
-書かれたアプリケーションは、リンクする DLL を本プロジェクトのもの
-( `FmGenEngine.dll` ) に差し替えるだけで動作する (対応チップの範囲内であれば
-再コンパイルも不要)。
+FmEngineApi は、FM 音源エンジンの DLL に共通の C インターフェース。
+[YMEngine](https://github.com/madscient/YMEngine) (ymfm 版) などの互換エンジンと
+同じヘッダ (`FmEngineApi.h`) を使い、DLL の中身を fmgen にしたものが本プロジェクト。
+仕様の同じ版に準拠するエンジンどうしは、アプリケーションがリンクする DLL を
+差し替えるだけで切り替えられる (対応チップの範囲内であれば再コンパイルも不要)。
+
+チップ・部位・外部メモリは、どれも名前の文字列で指定する。部位と外部メモリを番号
+(`FmPart` / `FmMemoryType`) で指定するヘッダでビルドしたアプリケーションは、
+この DLL と組み合わせられない (DLL が番号を文字列のポインタとして読む)。
 
 波形生成 (`FmEngine_Generate`) とオーディオ出力は分離されており、
 DLL 側には特定のオーディオ API (WASAPI 等) への依存がない。
@@ -40,17 +44,23 @@ DLL 側には特定のオーディオ API (WASAPI 等) への依存がない。
 ```
 FmGenEngine/
 ├── CMakeLists.txt
+├── cmake/
+│   └── CheckApiHeader.cmake  FmEngineApi.h と .def の検査 (configure 時に走る)
 ├── extern/
 │   └── fmgen/              ← fmgen 0.08 (cisc) + FmGenEngine による追加実装
 └── src/
     ├── FmGenChip.h         fmgenチップラッパー (OPN/OPNA/OPNB/OPNBB/OPN2/OPM)
     ├── FmGenExtChip.h      fmgen PSG (SSG) ラッパー
     ├── FmEngine.h          複数チップ管理・SPSCキュー・ゲイン
-    ├── FmGenEngine.h       DLL公開 C ABI 宣言
+    ├── FmEngineApi.h       DLL公開 C ABI 宣言 (FmEngineApi の正本の写し)
     ├── FmGenEngine.cpp     DLL公開 C ABI 実装
     ├── FmGenEngine.def
     └── FmGenEngine.rc
 ```
+
+`src/FmEngineApi.h` は、[FMEngineTest](https://github.com/madscient/FMEngineTest) の
+`include/FmEngineApi.h` (正本) の写しで、変更していない。アプリケーションはこの
+ヘッダを include する。直接編集すると configure で止まる。
 
 ## fmgen ソースについて
 
@@ -118,8 +128,9 @@ ROM モードと RAM モードの別々の空間として呼ぶ。外部メモ�
 | FmGenEngine 独自コード | `src/` | **MIT** ([`LICENSE`](./LICENSE) 参照) |
 | fmgen 本体 + 追加実装 | `extern/fmgen/` | cisc (1998, 2003) 独自ライセンス (MIT非互換) |
 
-`src/` の MIT License は `FmGenEngine.h` の元になった YMEngine
-(MIT License) から流用・改変した部分も含む。
+`src/` には、YMEngine (MIT License) から流用・改変した部分を含む。
+`src/FmEngineApi.h` は FMEngineTest (MIT License、Copyright (c) 2026 MadScient) の
+`include/FmEngineApi.h` の写しで、変更していない。
 
 fmgen のライセンス全文は `extern/fmgen/readme.txt` に同梱
 (UTF-8 変換済み、内容は原文と同一)。要点:
@@ -150,20 +161,24 @@ cmake --build build --config Release
 
 ## DLL の使い方
 
-### YMEngine との切り替え
+### ほかの互換エンジンとの切り替え
 
-| | YMEngine (ymfm) | FmGenEngine (fmgen) |
+ヘッダ (`FmEngineApi.h`) と関数は共通で、DLL とインポートライブラリの名前が
+エンジンごとに違う。
+
+| | FmGenEngine (fmgen) | 例: YMEngine (ymfm) |
 |---|---|---|
-| DLL | `YMFMEngine.dll` | `FmGenEngine.dll` |
-| インポートライブラリ | `YMFMEngine.lib` | `FmGenEngine.lib` |
-| ヘッダ | `FmEngineApi.h` | `FmGenEngine.h` |
-| 関数名・シグネチャ・列挙値 | 共通 | 共通 |
+| DLL | `FmGenEngine.dll` | `YMFMEngine.dll` |
+| インポートライブラリ | `FmGenEngine.lib` | `YMFMEngine.lib` |
+
+エクスポートするのは、仕様の必須の 12 関数と、任意の 8 関数のすべて (部位ごとの
+ゲインの 4 関数、外部メモリの 3 関数、`FmEngine_SetMemoryEx`)。
 
 チップは文字列で指定する。対応チップ一覧は `FmEngine_Inquiry` /
 `FmEngine_GetSupportedChip` で実行時に取得できる。
 
 ```c
-#include "FmGenEngine.h"
+#include "FmEngineApi.h"
 #pragma comment(lib, "FmGenEngine.lib")
 
 FmEngineHandle eng = FmEngine_Create(48000);
@@ -208,21 +223,37 @@ FM / SSG / ADPCM-B チャンネルの動作には影響しない。
 ADPCM を持つチップのメモリには、アプリケーションが用意したブロックを割り当てる。
 割り当てはオーディオストリームを始める前に行う (スレッドセーフではない)。
 
-| `FmMemoryType` | チップ | 内容 |
+外部メモリは名前の文字列で指定する (大文字小文字を区別する)。
+
+| 名前 | チップ | 内容 |
 |---|---|---|
-| `FM_MEM_ADPCM_A`         | OPNA | リズム音の内蔵 ROM の内容。受け付けるが読まない (リズムは WAV ファイルから鳴らす。「OPNA リズム音源」を参照) |
-| `FM_MEM_ADPCM_A`         | OPNB, OPNBB | ADPCM-A のメモリ |
-| `FM_MEM_ADPCM_B`         | OPNA | ADPCM-B の ROM/RAM 選択ビットが RAM のときにアクセスするメモリ |
-| `FM_MEM_ADPCM_B`         | OPNB, OPNBB | ADPCM-B のメモリ |
-| `FM_MEM_ADPCM_B_ROMMODE` | OPNA | ADPCM-B の ROM/RAM 選択ビットが ROM のときにアクセスするメモリ |
+| `ADPCM_B`         | OPNA | ADPCM-B の ROM/RAM 選択ビットが RAM のときにアクセスするメモリ |
+| `ADPCM_B_ROMMODE` | OPNA | ADPCM-B の ROM/RAM 選択ビットが ROM のときにアクセスするメモリ |
+| `ADPCM_A`         | OPNB, OPNBB | ADPCM-A のメモリ |
+| `ADPCM_B`         | OPNB, OPNBB | ADPCM-B のメモリ |
+
+OPN・OPN2・OPM・SSG は外部メモリを持たない。OPNA のリズム音の内蔵 ROM
+(FmEngineApi の仕様の `RHYTHM`) も持たない。リズムは WAV ファイルから鳴らすため
+(「OPNA リズム音源」を参照)。
+
+チップが持つ外部メモリは、`FmEngine_GetMemoryCount` / `FmEngine_GetMemoryName` で
+列挙できる。列挙した名前は、どれも `FmEngine_SetMemory` と `FmEngine_SetMemoryEx` に
+渡せる。
+
+```c
+uint32_t n = FmEngine_GetMemoryCount(eng, opnaId);
+for (uint32_t i = 0; i < n; ++i)
+    printf("%s ", FmEngine_GetMemoryName(eng, opnaId, i));
+// → ADPCM_B ADPCM_B_ROMMODE
+```
 
 OPNA は、ROM/RAM 選択ビット (port1 の `0x01` の bit0) で、ROM モードと RAM モードの
-別々のメモリにアクセスする。ROM モードで鳴らすデータは `FM_MEM_ADPCM_B_ROMMODE` に
-割り当てる。`FM_MEM_ADPCM_B` に割り当てたデータは RAM モードでだけ読まれる。
+別々のメモリにアクセスする。ROM モードで鳴らすデータは `ADPCM_B_ROMMODE` に
+割り当てる。`ADPCM_B` に割り当てたデータは RAM モードでだけ読まれる。
 
 割り当ての無い番地を読むと 0 で、書き込みは捨てる。何もつながっていない状態から
 始まるので、OPNA にレジスタ経由で ADPCM-B のデータを転送して鳴らすには、先に RAM を
-割り当てておく (`FmEngine_SetMemoryEx` の `FM_ACCESS_RAM`、または
+割り当てておく (`FmEngine_SetMemoryEx` の `FM_ACCESS_RAM`、または `ADPCM_B` への
 `FmEngine_SetMemory`)。
 
 #### FmEngine_SetMemoryEx
@@ -230,8 +261,8 @@ OPNA は、ROM/RAM 選択ビット (port1 の `0x01` の bit0) で、ROM モー�
 ```c
 // OPNA: RAM モードのメモリに 256KB の RAM、ROM モードのメモリに ROM イメージ
 static uint8_t ram[0x40000];
-FmEngine_SetMemoryEx(eng, opnaId, FM_MEM_ADPCM_B, 0, ram, sizeof ram, FM_ACCESS_RAM);
-FmEngine_SetMemoryEx(eng, opnaId, FM_MEM_ADPCM_B_ROMMODE, 0, rom, romSize, FM_ACCESS_ROM);
+FmEngine_SetMemoryEx(eng, opnaId, "ADPCM_B", 0, ram, sizeof ram, FM_ACCESS_RAM);
+FmEngine_SetMemoryEx(eng, opnaId, "ADPCM_B_ROMMODE", 0, rom, romSize, FM_ACCESS_ROM);
 ```
 
 - `[base, base + size)` に `data` を割り当てる。番地 `base + i` のバイトが `data[i]`。
@@ -241,31 +272,29 @@ FmEngine_SetMemoryEx(eng, opnaId, FM_MEM_ADPCM_B_ROMMODE, 0, rom, romSize, FM_AC
 - `FM_ACCESS_RAM` のブロックには、チップの書き込み (レジスタ経由の転送) をその場で
   書く。`FM_ACCESS_ROM` のブロックへの書き込みは捨てる。
 - ROM/RAM 選択ビットが ROM の間にレジスタ経由で転送したデータは、
-  `FM_MEM_ADPCM_B_ROMMODE` に書く。
+  `ADPCM_B_ROMMODE` に書く。
 - `data` に `NULL` を渡すと、`[base, base + size)` と重なるブロックをすべて外す
   (`access` は見ない)。
-- 未知の `chip_id`、チップが持たない `mem_type`、`size` が 0、`base + size` が 2^32 を
-  越える、既存のブロックと範囲が重なる、未知の `access` のときは `FM_ERR_INVALID_ARG`
-  を返す。
+- 未知の `chip_id`、チップが持たないメモリの名前、`memory` が `NULL`、`size` が 0、
+  `base + size` が 2^32 を越える、既存のブロックと範囲が重なる、未知の `access` の
+  ときは `FM_ERR_INVALID_ARG` を返す。
 
-#### FmEngine_SetMemory / FmEngine_GetMemorySize
+#### FmEngine_SetMemory
 
 ```c
-FmEngine_SetMemory(eng, opnbId, FM_MEM_ADPCM_A, adpcmaRom, adpcmaSize);
-FmEngine_SetMemory(eng, opnbId, FM_MEM_ADPCM_B, adpcmbRom, adpcmbSize);
+FmEngine_SetMemory(eng, opnbId, "ADPCM_A", adpcmaRom, adpcmaSize);
+FmEngine_SetMemory(eng, opnbId, "ADPCM_B", adpcmbRom, adpcmbSize);
 ```
 
-`FmEngine_SetMemory` は、`mem_type` のメモリを `[0, size)` の `data` だけにする
+`FmEngine_SetMemory` は、`memory` のメモリを `[0, size)` の `data` だけにする
 (それまでのブロックは外れる)。DLL は `data` に書き込まない。
 
-- OPNA の `FM_MEM_ADPCM_B` は DLL の内部に写す。チップの書き込みは写しに入る。
-- それ以外は `data` を参照する。割り当てを外すか `FmEngine_Destroy` が戻るまで
-  解放しないこと。
-- `FM_MEM_ADPCM_B_ROMMODE`、範囲外の種別、`data` が `NULL`、`size` が 0、未知の
-  `chip_id` を渡すと `FM_ERR_INVALID_ARG` を返す。チップが持たない種別は `FM_OK` を
-  返して無視する。
-
-`FmEngine_GetMemorySize` は、割り当てたブロックの大きさの合計を返す。
+- OPNA の `ADPCM_B` は DLL の内部に写す。チップの書き込みは写しに入る。
+- それ以外 (OPNA の `ADPCM_B_ROMMODE`、OPNB / OPNBB の `ADPCM_A` と `ADPCM_B`) は
+  `data` を参照し、チップの書き込みは捨てる。割り当てを外すか `FmEngine_Destroy` が
+  戻るまで解放しないこと。
+- 未知の `chip_id`、チップが持たないメモリの名前、`memory` が `NULL`、`data` が
+  `NULL`、`size` が 0 のときは `FM_ERR_INVALID_ARG` を返す。
 
 #### 書き込みが反映される時点
 
@@ -301,31 +330,36 @@ OPN / OPNA / OPNB / OPNBB は、FM 部と SSG 部を足し合わせて出力す�
 FM と SSG を別々の端子から出してボード上の回路でミックスするため、音量バランスは
 機種によって異なる。`FmEngine_SetPartGain` で部位ごとにゲインを設定できる。
 
+部位は名前の文字列で指定する (大文字小文字を区別する)。
+
 ```c
-FmEngine_SetPartGain(eng, opnaId, FM_PART_OPN_SSG, 0.5f, 0.5f);  // SSG を -6 dB
+FmEngine_SetPartGain(eng, opnaId, "SSG", 0.5f, 0.5f);  // SSG を -6 dB
 ```
 
-| 部位 | 対象チップ | 内容 | 既定値 |
+| 部位の名前 | 対象チップ | 内容 | 既定値 |
 |---|---|---|---|
-| `FM_PART_OPN_FM`  | OPN, OPNA, OPNB, OPNBB | FM 部 (ADPCM・リズムを含む) | 1.0 |
-| `FM_PART_OPN_SSG` | OPN, OPNA, OPNB, OPNBB | SSG 部 | 1.0 |
+| `FM`  | OPN, OPNA, OPNB, OPNBB | FM 部 (ADPCM・リズムを含む) | 1.0 |
+| `SSG` | OPN, OPNA, OPNB, OPNBB | SSG 部 | 1.0 |
 
 実際に掛かるゲインは、`FmEngine_SetGain` で設定したチップ全体のゲインと部位の
 ゲインの積。既定値 (1.0) では、FM 部と SSG 部を fmgen 本来のバランスで足し合わせる。
 
-OPN2・OPM・SSG は部位を持たないので、`FmEngine_SetGain` を使う。`FmPart` の
-その他の値 (`FM_PART_OPLL_MELODY` など) は YMEngine のチップ用で、本 DLL の
-チップには無い。チップが持たない部位を指定すると `FM_ERR_INVALID_ARG` を返す。
+OPN2・OPM・SSG は部位を持たないので、`FmEngine_SetGain` を使う。未知の `chip_id`、
+チップが持たない部位の名前、`NULL` を指定すると `FM_ERR_INVALID_ARG` を返す。
 
-チップが持つ部位は `FmEngine_GetPartMask` で調べられる。bit n が `FmPart` の
-n 番に当たり、部位を持たないチップでは 0。
+チップが持つ部位は `FmEngine_GetPartCount` / `FmEngine_GetPartName` で列挙できる。
+部位を持たないチップでは 0 個。
 
 ```c
-uint32_t mask = 0;
-FmEngine_GetPartMask(eng, opnaId, &mask);
-if (mask & (1u << FM_PART_OPN_SSG)) {
-    // SSG のゲインを設定できる
+uint32_t n = FmEngine_GetPartCount(eng, opnaId);
+for (uint32_t i = 0; i < n; ++i) {
+    const char* part = FmEngine_GetPartName(eng, opnaId, i);
+    float l, r;
+    FmEngine_GetPartGain(eng, opnaId, part, &l, &r);
+    printf("%s: L=%.2f R=%.2f\n", part, l, r);
 }
+// → FM: L=1.00 R=1.00
+//   SSG: L=1.00 R=1.00
 ```
 
 ### ネイティブサンプルレート
